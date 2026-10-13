@@ -12,6 +12,11 @@ Please see the LICENSE file that has been included as part of this package.
 #include <gtsam/geometry/Pose3.h>
 #include <gtsam/nonlinear/Values.h>
 
+// Std
+#include <fstream>
+#include <map>
+#include <string>
+
 // Workspace
 #include "graph_msf/core/optimizer/OptimizerBase.h"
 

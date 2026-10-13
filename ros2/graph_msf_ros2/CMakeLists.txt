@@ -20,6 +20,8 @@ find_package(tf2_eigen REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(graph_msf REQUIRED)
+find_package(GTSAM REQUIRED)
+find_package(GTSAM_UNSTABLE REQUIRED)
 
 # Color (Optional)
 if (NOT WIN32)
@@ -34,6 +36,8 @@ include_directories(
     include
     ${EIGEN3_INCLUDE_DIR}
     ${graph_msf_INCLUDE_DIRS}
+    ${GTSAM_INCLUDE_DIR}
+    ${GTSAM_UNSTABLE_INCLUDE_DIR}
 )
 
 # Library
@@ -60,6 +64,8 @@ ament_target_dependencies(${PROJECT_NAME}
   std_srvs
   visualization_msgs
   graph_msf
+  GTSAM
+  GTSAM_UNSTABLE
   rosidl_default_runtime
 )
 
@@ -103,6 +109,8 @@ ament_export_dependencies(
   std_srvs
   visualization_msgs
   graph_msf
+  GTSAM
+  GTSAM_UNSTABLE
   Eigen3
   rosidl_default_runtime
 )

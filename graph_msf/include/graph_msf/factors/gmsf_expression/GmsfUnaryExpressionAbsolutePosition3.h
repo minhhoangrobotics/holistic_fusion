@@ -28,7 +28,7 @@ class GmsfUnaryExpressionAbsolutePosition3 final : public GmsfUnaryExpressionAbs
       : GmsfUnaryExpressionAbsolut(positionUnaryMeasurementPtr, imuFrameName, T_I_sensorFrame,
                                    createReferenceAlignmentKeyframeEveryNSeconds),
         positionUnaryMeasurementPtr_(positionUnaryMeasurementPtr),
-        exp_fixedFrame_t_fixedFrame_sensorFrame_(gtsam::Point3::Identity()),
+        exp_fixedFrame_t_fixedFrame_sensorFrame_(gtsam::Point3::Zero()),
         exp_R_fixedFrame_I_(gtsam::Rot3::Identity()) {}
 
   // Destructor
@@ -49,7 +49,7 @@ class GmsfUnaryExpressionAbsolutePosition3 final : public GmsfUnaryExpressionAbs
   void generateImuStateInWorldFrameAtKey(const gtsam::Key& closestGeneralKey) final {
     // Translation (core part)
     exp_fixedFrame_t_fixedFrame_sensorFrame_ =
-        gtsam::translation(gtsam::Expression<gtsam::Pose3>(gtsam::symbol_shorthand::X(closestGeneralKey)));  // W_t_W_I at this point
+        gtsam::Expression<gtsam::Point3>(&gtsam::Pose3::translation, gtsam::Expression<gtsam::Pose3>(gtsam::symbol_shorthand::X(closestGeneralKey)));  // W_t_W_I at this point
 
     // Rotation (needed for the transformation to the sensor frame)
     exp_R_fixedFrame_I_ =

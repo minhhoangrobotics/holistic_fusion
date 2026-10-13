@@ -20,10 +20,8 @@ Please see the LICENSE file that has been included as part of this package.
 
 namespace graph_msf {
 
-StaticTransformsTf::StaticTransformsTf(const rclcpp::Node::SharedPtr& node,
-                                       const graph_msf::StaticTransforms& staticTransforms)
-    : StaticTransforms(staticTransforms),
-      tf_buffer_(std::make_shared<tf2_ros::Buffer>(node->get_clock())),
+StaticTransformsTf::StaticTransformsTf(const rclcpp::Node::SharedPtr& node)
+    : tf_buffer_(std::make_shared<tf2_ros::Buffer>(node->get_clock())),
       tf_listener_(*tf_buffer_) {
   RCLCPP_INFO(rclcpp::get_logger("graph_msf"), "StaticTransformsTf - Initializing static transforms...");
 }

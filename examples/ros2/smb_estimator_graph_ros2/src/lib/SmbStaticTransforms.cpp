@@ -20,7 +20,7 @@ Please see the LICENSE file that has been included as part of this package.
 namespace smb_se {
 
 SmbStaticTransforms::SmbStaticTransforms(const std::shared_ptr<rclcpp::Node>& nodePtr)
-    : graph_msf::StaticTransformsTf(nodePtr, *this) {
+    : graph_msf::StaticTransformsTf(nodePtr) {
   REGULAR_COUT << GREEN_START << " Initializing static transforms..." << COLOR_END << std::endl;
 }
 

@@ -27,7 +27,7 @@ class GmsfUnaryExpressionLocalVelocity3 final : public GmsfUnaryExpressionLocal<
                                     const std::shared_ptr<graph_msf::ImuBuffer> imuBufferPtr)
       : GmsfUnaryExpressionLocal(velocityUnaryMeasurementPtr, imuFrameName, T_I_sensorFrame),
         velocityUnaryMeasurementPtr_(velocityUnaryMeasurementPtr),
-        exp_sensorFrame_v_fixedFrame_sensorFrame_(gtsam::Point3::Identity()),
+        exp_sensorFrame_v_fixedFrame_sensorFrame_(gtsam::Point3::Zero()),
         exp_R_fixedFrame_I_(gtsam::Rot3::Identity()) {
     // Find Angular Velocity in IMU Buffer which is closest to the measurement time
     // Check whether we can find an IMU measurement corresponding to the velocity measurement

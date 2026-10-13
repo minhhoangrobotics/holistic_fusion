@@ -151,7 +151,7 @@ class GmsfUnaryExpression {
     std::lock_guard<std::mutex> modifyGraphKeysLock(gtsamDynamicExpressionKeys.get<gtsam::Pose3>().mutex());
 
     // Initial Guess
-    GTSAM_MEASUREMENT_TYPE initialGuess = GTSAM_MEASUREMENT_TYPE::Identity();
+    GTSAM_MEASUREMENT_TYPE initialGuess = GTSAM_MEASUREMENT_TYPE();
 
     // Search for new graph key
     bool newGraphKeyAddedFlag = false;

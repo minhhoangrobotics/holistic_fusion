@@ -69,7 +69,7 @@ class GmsfUnaryExpressionAbsolutePose3 final : public GmsfUnaryExpressionAbsolut
   void transformStateToReferenceFrameMeasurement(const gtsam::Pose3_& exp_T_W_fixedFrame) override {
     // Transform state to fixed frame
     // Following: T_fixedFrame_I = T_fixedFrame_W * T_W_I --> transformPoseTo is including the inverse
-    exp_T_fixedFrame_sensorFrame_ = transformPoseTo(exp_T_W_fixedFrame, exp_T_fixedFrame_sensorFrame_);  // T_fixedFrame_imu at this point
+    exp_T_fixedFrame_sensorFrame_ = gtsam::between(exp_T_W_fixedFrame, exp_T_fixedFrame_sensorFrame_);  // T_fixedFrame_imu at this point
   }
 
   // iii) transform estimate to sensor frame --------------------------------------------------------------

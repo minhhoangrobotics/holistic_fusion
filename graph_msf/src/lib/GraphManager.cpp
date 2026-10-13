@@ -450,7 +450,7 @@ Eigen::Matrix<double, 6, 6> GraphManager::calculatePoseCovarianceAtKeyInWorldFra
     navState = optionalNavState.value();
   } else {
     gtsam::Pose3 resultPose = graphPtr->calculateEstimatedPose3(graphKey);  // auto result = mainGraphPtr_->estimate();
-    gtsam::Point3 resultVelocity = gtsam::Point3::Identity();  // Assume Zero Velocity, but adjoint below is still fine to map to world
+    gtsam::Point3 resultVelocity = gtsam::Point3::Zero();  // Assume Zero Velocity, but adjoint below is still fine to map to world
     navState = gtsam::NavState(resultPose, resultVelocity);
   }
   // Compute adjoint matrix
@@ -1010,10 +1010,10 @@ void GraphManager::saveOptimizedValuesToFile(const gtsam::Values& optimizedValue
 
   // Save optimized states
   // A. 6D SE(3) states -----------------------------------------------------------
-  for (const auto& keyPosePair : optimizedValues.extract<gtsam::Pose3>()) {
+  for (const auto& keyPosePair : optimizedValues.filter<gtsam::Pose3>()) {
     // Read out information
-    const gtsam::Key& graphKey = keyPosePair.first;
-    gtsam::Pose3 pose = keyPosePair.second;
+    const gtsam::Key& graphKey = keyPosePair.key;
+    gtsam::Pose3 pose = keyPosePair.value;
     const gtsam::Symbol stateSymbol(graphKey);
     const char stateCategory = stateSymbol.chr();
     const double timeStamp = keyTimestampMap.at(graphKey);
@@ -1091,10 +1091,10 @@ void GraphManager::saveOptimizedValuesToFile(const gtsam::Values& optimizedValue
   }  // end of for loop over all pose states
 
   // B. 3D R(3) states (e.g. velocity, calibration displacement, landmarks) -----------------------------------------------------------
-  for (const auto& keyVectorPair : optimizedValues.extract<gtsam::Point3>()) {
+  for (const auto& keyVectorPair : optimizedValues.filter<gtsam::Point3>()) {
     // Read out information
-    const gtsam::Key& key = keyVectorPair.first;
-    const gtsam::Vector& vector = keyVectorPair.second;
+    const gtsam::Key& key = keyVectorPair.key;
+    const gtsam::Vector& vector = keyVectorPair.value;
     const gtsam::Symbol symbol(key);
     const char stateCategory = symbol.chr();
     const double timeStamp = keyTimestampMap.at(key);
@@ -1144,10 +1144,10 @@ void GraphManager::saveOptimizedValuesToFile(const gtsam::Values& optimizedValue
   }  // end of for loop over all vector states
 
   // C. Bias states (accelerometer and gyroscope) -----------------------------------------------------------
-  for (const auto& keyBiasPair : optimizedValues.extract<gtsam::imuBias::ConstantBias>()) {
+  for (const auto& keyBiasPair : optimizedValues.filter<gtsam::imuBias::ConstantBias>()) {
     // Read out information
-    const gtsam::Key& key = keyBiasPair.first;
-    const gtsam::imuBias::ConstantBias& bias = keyBiasPair.second;
+    const gtsam::Key& key = keyBiasPair.key;
+    const gtsam::imuBias::ConstantBias& bias = keyBiasPair.value;
     const gtsam::Symbol symbol(key);
     const char stateCategory = symbol.chr();
     const double timeStamp = keyTimestampMap.at(key);
