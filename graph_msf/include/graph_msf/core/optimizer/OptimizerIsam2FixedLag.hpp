@@ -10,6 +10,7 @@ Please see the LICENSE file that has been included as part of this package.
 
 // GTSAM
 #include <gtsam_unstable/nonlinear/IncrementalFixedLagSmoother.h>
+#include <gtsam/linear/linearExceptions.h>
 
 // Workspace
 #include <graph_msf/core/optimizer/OptimizerIsam2.hpp>
@@ -52,6 +53,7 @@ class OptimizerIsam2FixedLag : public OptimizerIsam2 {
     }
     // Case 1: Catching the failure of marginalization (as some states which should be marginalized have not been optimized before)
     catch (const std::out_of_range& outOfRangeException) {
+      *fixedLagSmootherPtr_ = fixedLagSmootherCopy;
       std::cerr << YELLOW_START << "GMsf-ISAM2" << RED_START << " Out of Range exception while optimizing graph: '"
                 << outOfRangeException.what() << "'." << COLOR_END << std::endl;
       std::cout << YELLOW_START << "GMsf-ISAM2" << RED_START
@@ -131,6 +133,7 @@ class OptimizerIsam2FixedLag : public OptimizerIsam2 {
     }
     // Case 2: Catching the addition of a bad factor (pointing to a state that does not exist)
     catch (const gtsam::ValuesKeyDoesNotExist& valuesKeyDoesNotExistException) {
+      *fixedLagSmootherPtr_ = fixedLagSmootherCopy;
       std::cout << "----------------------------------------------------------" << std::endl;
       std::cerr << YELLOW_START << "GMsf-ISAM2" << RED_START << " ValuesKeyDoesNotExist exception while optimizing graph: '" << COLOR_END
                 << valuesKeyDoesNotExistException.what() << "'" << std::endl;
@@ -188,8 +191,6 @@ class OptimizerIsam2FixedLag : public OptimizerIsam2 {
                   << " Filtered out the factor or key that caused the error (i.e. containing the key "
                   << gtsam::Symbol(valuesKeyNotExistent) << "). Trying to optimize again." << COLOR_END << std::endl;
         std::cout << "----------------------------------------------------------" << std::endl;
-        // Copy back
-        *fixedLagSmootherPtr_ = fixedLagSmootherCopy;
         // Try again
         return update(newGraphFactorsFiltered, newGraphValues, newGraphKeysTimeStampMapFiltered);
       } else {
@@ -200,8 +201,17 @@ class OptimizerIsam2FixedLag : public OptimizerIsam2 {
         return false;
       }
     }
+    // Preserve the last valid graph and report the failing key. The caller
+    // must treat this update as failed instead of using a partial estimate.
+    catch (const gtsam::IndeterminantLinearSystemException& exception) {
+      *fixedLagSmootherPtr_ = fixedLagSmootherCopy;
+      std::cerr << "GraphMSF: ill-posed fixed-lag graph near " << gtsam::Symbol(exception.nearbyVariable())
+                << ": " << exception.what() << std::endl;
+      return false;
+    }
     // Case 3: ValuesKeyAlreadyExists
     catch (const gtsam::ValuesKeyAlreadyExists& valuesKeyAlreadyExistsException) {
+      *fixedLagSmootherPtr_ = fixedLagSmootherCopy;
       std::cerr << YELLOW_START << "GMsf-ISAM2" << RED_START << " ValuesKeyAlreadyExists exception while optimizing graph: '"
                 << valuesKeyAlreadyExistsException.what() << "'" << COLOR_END << std::endl;
       std::cout << YELLOW_START << "GMsf-ISAM2" << COLOR_END
@@ -212,6 +222,7 @@ class OptimizerIsam2FixedLag : public OptimizerIsam2 {
     }
     // Case 4: Runtime error --> can't handle explicitly
     catch (const std::runtime_error& runtimeError) {
+      *fixedLagSmootherPtr_ = fixedLagSmootherCopy;
       std::cout << YELLOW_START << "GMsf-ISAM2" << RED_START << " Runtime error while optimizing graph: " << runtimeError.what()
                 << COLOR_END << std::endl;
       throw std::runtime_error(runtimeError.what());

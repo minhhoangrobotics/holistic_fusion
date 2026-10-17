@@ -23,6 +23,11 @@ GraphMsf::GraphMsf() {
   REGULAR_COUT << GREEN_START << " GraphMsf-Constructor called." << COLOR_END << std::endl;
 }
 
+GraphMsf::~GraphMsf() {
+  optimizationThreadRunning_ = false;
+  if (optimizeGraphThread_.joinable()) optimizeGraphThread_.join();
+}
+
 void GraphMsf::setup(const std::shared_ptr<GraphConfig> graphConfigPtr, const std::shared_ptr<StaticTransforms> staticTransformsPtr) {
   REGULAR_COUT << GREEN_START << " GraphMsf-Setup called." << COLOR_END << std::endl;
 
@@ -277,6 +282,17 @@ bool GraphMsf::addZeroVelocityFactor(double timeK, double noiseDensity) {
 
 // Private ---------------------------------------------------------------
 
+void GraphMsf::setImuOrientationForAlignment(const Eigen::Quaterniond& orientation) {
+  const double norm = orientation.norm();
+  if (!orientation.coeffs().allFinite() || norm < 0.5 || norm > 1.5) {
+    return;
+  }
+  const std::lock_guard<std::mutex> lock(initYawAndPositionMutex_);
+  if (!alignedImuFlag_) {
+    imuOrientationForAlignment_ = orientation.normalized();
+  }
+}
+
 /// Worker Functions -----------------------
 bool GraphMsf::alignImu_(double& imuAttitudeRoll, double& imuAttitudePitch) {
   gtsam::Rot3 R_W_I_rollPitch;
@@ -284,6 +300,17 @@ bool GraphMsf::alignImu_(double& imuAttitudeRoll, double& imuAttitudePitch) {
   ++alignImuCounter__;
   double estimatedGravityMagnitude;
   if (coreImuBufferPtr_->estimateAttitudeFromImu(R_W_I_rollPitch, estimatedGravityMagnitude, graphMgrPtr_->getInitGyrBiasReference())) {
+    if (imuOrientationForAlignment_) {
+      const gtsam::Rot3 imuOrientation(*imuOrientationForAlignment_);
+      R_W_I_rollPitch = gtsam::Rot3::Ypr(0.0, imuOrientation.pitch(), imuOrientation.roll());
+      // Mean angular velocity and acceleration during startup include actual
+      // robot motion. Do not mistake that motion for sensor bias.
+      graphMgrPtr_->getInitGyrBiasReference().setZero();
+      graphMgrPtr_->getInitAccBiasReference().setZero();
+      REGULAR_COUT << " Initial roll/pitch from IMU orientation (deg): "
+                   << R_W_I_rollPitch.roll() * 180.0 / M_PI << ", "
+                   << R_W_I_rollPitch.pitch() * 180.0 / M_PI << std::endl;
+    }
     imuAttitudeRoll = R_W_I_rollPitch.roll();
     imuAttitudePitch = R_W_I_rollPitch.pitch();
     if (graphConfigPtr_->estimateGravityFromImuFlag_) {
@@ -297,7 +324,9 @@ bool GraphMsf::alignImu_(double& imuAttitudeRoll, double& imuAttitudePitch) {
       gtsam::Vector3 estimatedGravityVector = gtsam::Vector3(0, 0, estimatedGravityMagnitude);
       gtsam::Vector3 gravityVectorError = estimatedGravityVector - gravityVector;
       gtsam::Vector3 gravityVectorErrorInImuFrame = R_W_I_rollPitch.inverse().rotate(gravityVectorError);
-      graphMgrPtr_->getInitAccBiasReference() = gravityVectorErrorInImuFrame;
+      if (!imuOrientationForAlignment_) {
+        graphMgrPtr_->getInitAccBiasReference() = gravityVectorErrorInImuFrame;
+      }
       std::cout << YELLOW_START << "GMsf" << COLOR_END << " Gravity error in IMU frame is: " << gravityVectorErrorInImuFrame.transpose()
                 << std::endl;
     }
@@ -340,7 +369,7 @@ void GraphMsf::optimizeGraph_() {
   double lastOptimizedTime = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
   double currentTime = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
   bool optimizedAtLeastOnce = false;
-  while (true) {
+  while (optimizationThreadRunning_) {
     bool optimizeGraphFlag = false;
     // Mutex for optimizeGraph Flag
     {

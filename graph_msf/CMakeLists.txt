@@ -53,6 +53,12 @@ add_library(${PROJECT_NAME} SHARED
 ament_target_dependencies(${PROJECT_NAME} Eigen3 GTSAM GTSAM_UNSTABLE tf2_eigen Python3)
 target_link_libraries(${PROJECT_NAME} gtsam gtsam_unstable)
 
+if(BUILD_TESTING)
+    find_package(ament_cmake_gtest REQUIRED)
+    ament_add_gtest(test_time_graph_key_buffer test/test_time_graph_key_buffer.cpp)
+    target_link_libraries(test_time_graph_key_buffer ${PROJECT_NAME})
+endif()
+
 # Optional: Clang tooling
 find_package(cmake_clang_tools QUIET)
 if (cmake_clang_tools_FOUND AND NOT DEFINED NO_CLANG_TOOLING)

@@ -21,14 +21,9 @@ void GraphManager::addUnaryFactorInImuFrame(const MEASUREMENT_TYPE& unaryMeasure
   std::string callingName = "GnssPositionUnaryFactor";
   if (!timeToKeyBufferPtr_->getClosestKeyAndTimestamp(closestGraphTime, closestKey, callingName, graphConfigPtr_->maxSearchDeviation_,
                                                       measurementTime)) {
-    if (propagatedStateTime_ - measurementTime < 0.0) {  // Factor is coming from the future, hence add it to the buffer and adding it later
-      // TODO: Add to buffer and return --> still add it until we are there
-    } else {  // Otherwise do not add it
-      REGULAR_COUT << RED_START << " Time deviation of " << typeid(FACTOR_TYPE).name() << " at key " << closestKey << " is "
-                   << 1000 * std::abs(closestGraphTime - measurementTime) << " ms, being larger than admissible deviation of "
-                   << 1000 * graphConfigPtr_->maxSearchDeviation_ << " ms. Not adding to graph." << COLOR_END << std::endl;
-      return;
-    }
+    // No usable key exists yet (or the measurement is outside the buffered
+    // time range). Never construct a factor with an uninitialized key.
+    return;
   }
 
   // Create noise model

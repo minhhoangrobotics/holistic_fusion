@@ -8,6 +8,9 @@ Please see the LICENSE file that has been included as part of this package.
 // Implementation
 #include "smb_estimator_graph_ros2/SmbEstimator.h"
 
+#include <cmath>
+#include <limits>
+
 // Project
 #include "smb_estimator_graph_ros2/SmbStaticTransforms.h"
 
@@ -61,6 +64,9 @@ void SmbEstimator::setup() {
 
   // Wheel Radius (double)
   node_->declare_parameter("sensor_params.wheelRadius", 0.0);
+  lioLegMaxHorizontalError_ = node_->declare_parameter<double>("sensor_params.lioLegMaxHorizontalError", 1.2);
+  lioLegMaxVerticalError_ = node_->declare_parameter<double>("sensor_params.lioLegMaxVerticalError", 0.6);
+  lioLegMaxYawError_ = node_->declare_parameter<double>("sensor_params.lioLegMaxYawError", 0.6);
 
   SmbEstimator::readParams();
 
@@ -79,32 +85,32 @@ void SmbEstimator::setup() {
 }
 
 void SmbEstimator::initializePublishers() {
-  pubMeasMapLioPath_ = node_->create_publisher<nav_msgs::msg::Path>("/graph_msf/measLiDAR_path_map_imu", ROS_QUEUE_SIZE);
-  pubMeasMapVioPath_ = node_->create_publisher<nav_msgs::msg::Path>("/graph_msf/measVIO_path_map_imu", ROS_QUEUE_SIZE);
+  pubMeasMapLioPath_ = node_->create_publisher<nav_msgs::msg::Path>("/graph_msf/measLiDAR_path_map_imu", SMB_QUEUE_SIZE);
+  pubMeasMapVioPath_ = node_->create_publisher<nav_msgs::msg::Path>("/graph_msf/measVIO_path_map_imu", SMB_QUEUE_SIZE);
 }
 
 void SmbEstimator::initializeSubscribers() {
   if (useLioOdometryFlag_) {
     subLioOdometry_ = node_->create_subscription<nav_msgs::msg::Odometry>(
-        "/lidar_odometry_topic", ROS_QUEUE_SIZE, std::bind(&SmbEstimator::lidarOdometryCallback_, this, std::placeholders::_1));
+        "/lidar_odometry_topic", SMB_QUEUE_SIZE, std::bind(&SmbEstimator::lidarOdometryCallback_, this, std::placeholders::_1));
     REGULAR_COUT << COLOR_END << " Initialized LiDAR Odometry subscriber with topic: /lidar_odometry_topic" << std::endl;
   }
 
   if (useWheelOdometryBetweenFlag_) {
     subWheelOdometryBetween_ = node_->create_subscription<nav_msgs::msg::Odometry>(
-        "/wheel_odometry_topic", ROS_QUEUE_SIZE, std::bind(&SmbEstimator::wheelOdometryPoseCallback_, this, std::placeholders::_1));
+        "/wheel_odometry_topic", SMB_QUEUE_SIZE, std::bind(&SmbEstimator::wheelOdometryPoseCallback_, this, std::placeholders::_1));
     REGULAR_COUT << COLOR_END << " Initialized Wheel Odometry subscriber with topic: /wheel_odometry_topic" << std::endl;
   }
 
   if (useWheelLinearVelocitiesFlag_) {
     subWheelLinearVelocities_ = node_->create_subscription<std_msgs::msg::Float64MultiArray>(
-        "/wheel_velocities_topic", ROS_QUEUE_SIZE, std::bind(&SmbEstimator::wheelLinearVelocitiesCallback_, this, std::placeholders::_1));
+        "/wheel_velocities_topic", SMB_QUEUE_SIZE, std::bind(&SmbEstimator::wheelLinearVelocitiesCallback_, this, std::placeholders::_1));
     REGULAR_COUT << COLOR_END << " Initialized Wheel Linear Velocities subscriber with topic: /wheel_velocities_topic" << std::endl;
   }
 
   if (useVioOdometryFlag_) {
     subVioOdometry_ = node_->create_subscription<nav_msgs::msg::Odometry>(
-        "/vio_odometry_topic", ROS_QUEUE_SIZE, std::bind(&SmbEstimator::vioOdometryCallback_, this, std::placeholders::_1));
+        "/vio_odometry_topic", SMB_QUEUE_SIZE, std::bind(&SmbEstimator::vioOdometryCallback_, this, std::placeholders::_1));
     REGULAR_COUT << COLOR_END << " Initialized VIO Odometry subscriber with topic: /vio_odometry_topic" << std::endl;
   }
 }
@@ -139,22 +145,55 @@ void SmbEstimator::imuCallback(const sensor_msgs::msg::Imu::SharedPtr imuPtr) {
 
 void SmbEstimator::lidarOdometryCallback_(const nav_msgs::msg::Odometry::ConstSharedPtr& odomLidarPtr) {
   static int lidarOdometryCallbackCounter__ = -1;
-  ++lidarOdometryCallbackCounter__;
+  static double lastLidarOdometryTime = -std::numeric_limits<double>::infinity();
 
   Eigen::Isometry3d lio_T_M_Lk;
   graph_msf::odomMsgToEigen(*odomLidarPtr, lio_T_M_Lk.matrix());
   double lidarOdometryTimeK = odomLidarPtr->header.stamp.sec + odomLidarPtr->header.stamp.nanosec * 1e-9;
+  if (!std::isfinite(lidarOdometryTimeK) || !lio_T_M_Lk.matrix().allFinite() ||
+      lidarOdometryTimeK <= lastLidarOdometryTime) {
+    RCLCPP_WARN_THROTTLE(node_->get_logger(), *node_->get_clock(), 5000, "Ignoring invalid or out-of-order LiDAR odometry");
+    return;
+  }
+  lastLidarOdometryTime = lidarOdometryTimeK;
+  ++lidarOdometryCallbackCounter__;
 
   const std::string& lioOdometryFrame = dynamic_cast<SmbStaticTransforms*>(staticTransformsPtr_.get())->getLioOdometryFrame();
 
   graph_msf::UnaryMeasurementXDAbsolute<Eigen::Isometry3d, 6> unary6DMeasurement(
       "Lidar_unary_6D", int(lioOdometryRate_), lioOdometryFrame, lioOdometryFrame + sensorFrameCorrectedNameId,
-      graph_msf::RobustNorm::None(), lidarOdometryTimeK, 1.0, lio_T_M_Lk, lioPoseUnaryNoise_, odomLidarPtr->header.frame_id,
+      graph_msf::RobustNorm::Huber(2.0), lidarOdometryTimeK, 1.0, lio_T_M_Lk, lioPoseUnaryNoise_, odomLidarPtr->header.frame_id,
       staticTransformsPtr_->getWorldFrame(), initialSe3AlignmentNoise_, lioSe3AlignmentRandomWalk_);
 
   if (lidarOdometryCallbackCounter__ <= 2) {
     return;
-  } else if (areYawAndPositionInited()) {
+  }
+
+  Eigen::Isometry3d legPose;
+  if (!legPoseAt_(lidarOdometryTimeK, legPose)) {
+    RCLCPP_WARN_THROTTLE(node_->get_logger(), *node_->get_clock(), 5000,
+                         "Waiting for leg odometry near LiDAR stamp; LiDAR factor held");
+    return;
+  }
+  if (!lioLegReferenceReady_) {
+    lioFromLeg_ = lio_T_M_Lk * legPose.inverse();
+    lioLegReferenceReady_ = true;
+  } else {
+    const Eigen::Isometry3d error = (lioFromLeg_ * legPose).inverse() * lio_T_M_Lk;
+    const double horizontalError = error.translation().head<2>().norm();
+    const double verticalError = std::abs(error.translation().z());
+    const double yawError = std::abs(std::atan2(error.rotation()(1, 0), error.rotation()(0, 0)));
+    if (horizontalError > lioLegMaxHorizontalError_ ||
+        verticalError > lioLegMaxVerticalError_ ||
+        yawError > lioLegMaxYawError_) {
+      RCLCPP_WARN_THROTTLE(node_->get_logger(), *node_->get_clock(), 5000,
+                           "Rejecting drifting KISS pose: leg disagreement xy=%.2f m, z=%.2f m, yaw=%.2f rad",
+                           horizontalError, verticalError, yawError);
+      return;
+    }
+  }
+
+  if (areYawAndPositionInited()) {
     this->addUnaryPose3AbsoluteMeasurement(unary6DMeasurement);
   } else {
     this->initYawAndPosition(unary6DMeasurement);
@@ -168,20 +207,52 @@ void SmbEstimator::lidarOdometryCallback_(const nav_msgs::msg::Odometry::ConstSh
   pubMeasMapLioPath_->publish(*measLio_mapImuPathPtr_);
 }
 
-void SmbEstimator::wheelOdometryPoseCallback_(const nav_msgs::msg::Odometry::ConstSharedPtr& wheelOdometryKPtr) {
-  if (!areRollAndPitchInited()) {
-    return;
+bool SmbEstimator::legPoseAt_(double stamp, Eigen::Isometry3d& pose) {
+  std::lock_guard<std::mutex> lock(recentLegOdometryMutex_);
+  if (recentLegOdometry_.empty()) return false;
+  auto nearest = recentLegOdometry_.begin();
+  double nearestError = std::numeric_limits<double>::infinity();
+  for (auto it = recentLegOdometry_.begin(); it != recentLegOdometry_.end(); ++it) {
+    const auto& t = (*it)->header.stamp;
+    const double error = std::abs(t.sec + t.nanosec * 1e-9 - stamp);
+    if (error < nearestError) {
+      nearest = it;
+      nearestError = error;
+    }
   }
+  if (nearestError > 0.2) return false;
+  graph_msf::odomMsgToEigen(**nearest, pose.matrix());
+  return pose.matrix().allFinite();
+}
 
-  ++wheelOdometryCallbackCounter_;
-
+void SmbEstimator::wheelOdometryPoseCallback_(const nav_msgs::msg::Odometry::ConstSharedPtr& wheelOdometryKPtr) {
   Eigen::Isometry3d T_O_Bw_k;
   graph_msf::odomMsgToEigen(*wheelOdometryKPtr, T_O_Bw_k.matrix());
   double wheelOdometryTimeK = wheelOdometryKPtr->header.stamp.sec + wheelOdometryKPtr->header.stamp.nanosec * 1e-9;
+  if (!std::isfinite(wheelOdometryTimeK) || !T_O_Bw_k.matrix().allFinite()) {
+    RCLCPP_WARN_THROTTLE(node_->get_logger(), *node_->get_clock(), 5000, "Ignoring non-finite leg odometry");
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lock(recentLegOdometryMutex_);
+    recentLegOdometry_.push_back(wheelOdometryKPtr);
+    while (!recentLegOdometry_.empty()) {
+      const auto& oldest = recentLegOdometry_.front()->header.stamp;
+      if (wheelOdometryTimeK - (oldest.sec + oldest.nanosec * 1e-9) <= 5.0) break;
+      recentLegOdometry_.pop_front();
+    }
+  }
+  if (!areRollAndPitchInited()) return;
+
+  ++wheelOdometryCallbackCounter_;
 
   if (wheelOdometryCallbackCounter_ == 0) {
     T_O_Bw_km1_ = T_O_Bw_k;
     wheelOdometryTimeKm1_ = wheelOdometryTimeK;
+    return;
+  }
+  if (wheelOdometryTimeK <= wheelOdometryTimeKm1_) {
+    RCLCPP_WARN_THROTTLE(node_->get_logger(), *node_->get_clock(), 5000, "Ignoring out-of-order leg odometry");
     return;
   }
 
@@ -198,7 +269,7 @@ void SmbEstimator::wheelOdometryPoseCallback_(const nav_msgs::msg::Odometry::Con
     Eigen::Isometry3d T_Bkm1_Bk = T_O_Bw_km1_.inverse() * T_O_Bw_k;
     graph_msf::BinaryMeasurementXD<Eigen::Isometry3d, 6> delta6DMeasurement(
         "Wheel_odometry_6D", int(wheelOdometryBetweenRate_ / 5), wheelOdometryFrame, wheelOdometryFrame + sensorFrameCorrectedNameId,
-        graph_msf::RobustNorm::Tukey(1.0), wheelOdometryTimeKm1_, wheelOdometryTimeK, T_Bkm1_Bk, wheelPoseBetweenNoise_);
+        graph_msf::RobustNorm::Huber(2.0), wheelOdometryTimeKm1_, wheelOdometryTimeK, T_Bkm1_Bk, wheelPoseBetweenNoise_);
     this->addBinaryPose3Measurement(delta6DMeasurement);
 
     T_O_Bw_km1_ = T_O_Bw_k;

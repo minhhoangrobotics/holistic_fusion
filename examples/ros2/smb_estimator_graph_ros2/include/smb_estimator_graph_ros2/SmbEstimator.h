@@ -9,7 +9,9 @@ Please see the LICENSE file that has been included as part of this package.
 
 // std
 #include <chrono>
+#include <deque>
 #include <memory>
+#include <mutex>
 
 // ROS 2
 #include <tf2_ros/buffer.h>
@@ -24,7 +26,7 @@ Please see the LICENSE file that has been included as part of this package.
 #include "graph_msf_ros2/GraphMsfRos2.h"
 
 // Defined Macros
-#define ROS_QUEUE_SIZE 100
+#define SMB_QUEUE_SIZE 10
 #define NUM_GNSS_CALLBACKS_UNTIL_START 20  // 0
 
 namespace smb_se {
@@ -81,6 +83,7 @@ class SmbEstimator : public graph_msf::GraphMsfRos2 {
   void lidarOdometryCallback_(const nav_msgs::msg::Odometry::ConstSharedPtr& lidarOdomPtr);
   // Wheel Between
   void wheelOdometryPoseCallback_(const nav_msgs::msg::Odometry::ConstSharedPtr& wheelOdomPtr);
+  bool legPoseAt_(double stamp, Eigen::Isometry3d& pose);
   // Wheel Linear Velocities
   void wheelLinearVelocitiesCallback_(const std_msgs::msg::Float64MultiArray::ConstSharedPtr& wheelsSpeedsPtr);
   // VIO
@@ -90,6 +93,13 @@ class SmbEstimator : public graph_msf::GraphMsfRos2 {
   int wheelOdometryCallbackCounter_ = -1;
   Eigen::Isometry3d T_O_Bw_km1_;
   double wheelOdometryTimeKm1_ = 0.0;
+  std::deque<nav_msgs::msg::Odometry::ConstSharedPtr> recentLegOdometry_;
+  std::mutex recentLegOdometryMutex_;
+  bool lioLegReferenceReady_ = false;
+  Eigen::Isometry3d lioFromLeg_ = Eigen::Isometry3d::Identity();
+  double lioLegMaxHorizontalError_ = 1.2;
+  double lioLegMaxVerticalError_ = 0.6;
+  double lioLegMaxYawError_ = 0.6;
 
   // Subscribers
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr subLioOdometry_;

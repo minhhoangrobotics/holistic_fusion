@@ -128,6 +128,7 @@ class GraphMsfRos2 : public GraphMsfClassic, public GraphMsfHolistic {
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pubEstOdomImu_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pubEstWorldImu_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pubOptWorldImu_;
+  rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pubOptWorldBaseFiltered_;
   rclcpp::Publisher<geometry_msgs::msg::Vector3Stamped>::SharedPtr pubEstWorldPosVariance_;
   rclcpp::Publisher<geometry_msgs::msg::Vector3Stamped>::SharedPtr pubEstWorldRotVariance_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr pubVelocityMarker_;
@@ -146,11 +147,18 @@ class GraphMsfRos2 : public GraphMsfClassic, public GraphMsfHolistic {
 
   // Subscribers
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr subImu_;
+  bool useImuOrientationFactor_ = false;
+  double imuOrientationFactorRate_ = 10.0;
+  double imuOrientationFactorNoise_ = 0.05;
+  double lastImuOrientationFactorTime_ = -1.0;
+  bool imuOrientationYawAligned_ = false;
+  double imuOrientationYawOffset_ = 0.0;
 
   // Messages
   nav_msgs::msg::Odometry::SharedPtr estOdomImuMsgPtr_;
   nav_msgs::msg::Odometry::SharedPtr estWorldImuMsgPtr_;
   nav_msgs::msg::Odometry::SharedPtr optWorldImuMsgPtr_;
+  nav_msgs::msg::Odometry::SharedPtr optWorldBaseFilteredMsgPtr_;
   geometry_msgs::msg::Vector3Stamped::SharedPtr estWorldPosVarianceMsgPtr_;
   geometry_msgs::msg::Vector3Stamped::SharedPtr estWorldRotVarianceMsgPtr_;
   nav_msgs::msg::Path::SharedPtr estOdomImuPathPtr_;

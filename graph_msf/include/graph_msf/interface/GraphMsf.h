@@ -9,7 +9,9 @@ Please see the LICENSE file that has been included as part of this package.
 #define GRAPH_MSF_H
 
 // C++
+#include <atomic>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <thread>
 #include <unordered_set>
@@ -34,7 +36,7 @@ class GraphMsf {
   // Constructor
   GraphMsf();
   // Destructor
-  virtual ~GraphMsf() = default;
+  virtual ~GraphMsf();
 
   // Setup
   void setup(const std::shared_ptr<GraphConfig> graphConfigPtr, const std::shared_ptr<StaticTransforms> staticTransformsPtr);
@@ -55,6 +57,10 @@ class GraphMsf {
   bool areRollAndPitchInited() const;
   bool isGraphInited() const;
   bool getNormalOperationFlag() const { return normalOperationFlag_; }
+
+  // Prefer a valid orientation supplied by the IMU for initial roll/pitch.
+  // Accelerometer-only alignment is unreliable while the robot is moving.
+  void setImuOrientationForAlignment(const Eigen::Quaterniond& orientation);
 
   // Main: IMU
   bool addCoreImuMeasurementAndGetState(const Eigen::Vector3d& linearAcc, const Eigen::Vector3d& angularVel, const double imuTimeK,
@@ -155,9 +161,11 @@ class GraphMsf {
   // Threads
   std::thread optimizeGraphThread_;  /// Thread 5: Update of the graph as soon as
                                      /// new lidar measurement has arrived
+  std::atomic<bool> optimizationThreadRunning_{true};
 
   // Mutex
   std::mutex initYawAndPositionMutex_;
+  std::optional<Eigen::Quaterniond> imuOrientationForAlignment_;
 
   /// State Containers
   std::shared_ptr<SafeIntegratedNavState> preIntegratedNavStatePtr_ = nullptr;

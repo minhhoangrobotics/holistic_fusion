@@ -525,8 +525,9 @@ void GraphManager::updateGraph() {
   }
   // Batch Smoother
   if (graphConfigPtr_->useAdditionalSlowBatchSmootherFlag_ && newBatchGraphFactors.size() > 0) {
-    successfulOptimizationFlag =
+    const bool batchSuccess =
         addFactorsToBatchSmootherAndOptimize(newBatchGraphFactors, newBatchGraphValues, newBatchGraphKeysTimestampsMap, graphConfigPtr_);
+    successfulOptimizationFlag = successfulOptimizationFlag && batchSuccess;
   } else if (graphConfigPtr_->verboseLevel_ > 3) {
     REGULAR_COUT << " No factors present in batch smoother, not optimizing." << std::endl;
   }
