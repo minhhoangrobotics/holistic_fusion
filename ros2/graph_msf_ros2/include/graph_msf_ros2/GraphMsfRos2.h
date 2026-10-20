@@ -173,6 +173,9 @@ class GraphMsfRos2 : public GraphMsfClassic, public GraphMsfHolistic {
 
   // Last Optimized State Timestamp
   double lastOptimizedStateTimestamp_ = 0.0;
+  double rosPublishRateHz_ = 0.0;
+  double lastRosPublishTime_ = 0.0;
+  std::mutex rosPublishGateMutex_;
 
   // Mutex
   std::mutex rosPublisherMutex_;

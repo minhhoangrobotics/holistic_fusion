@@ -34,6 +34,10 @@ void GraphMsfRos2::setup(std::shared_ptr<StaticTransforms> staticTransformsPtr) 
   node_->declare_parameter("sensor_params.imuLowPassFilterCutoffFreq", 0.0);
   node_->declare_parameter("sensor_params.imuBufferLength", 800);
   node_->declare_parameter("sensor_params.imuTimeOffset", 0.0);
+  rosPublishRateHz_ = node_->declare_parameter<double>("ros_publish_rate_hz", 0.0);
+  if (rosPublishRateHz_ < 0.0) {
+    throw std::invalid_argument("ros_publish_rate_hz must be nonnegative");
+  }
   useImuOrientationFactor_ = node_->declare_parameter<bool>("sensor_params.useImuOrientationFactor", false);
   imuOrientationFactorRate_ = node_->declare_parameter<double>("sensor_params.imuOrientationFactorRate", 10.0);
   imuOrientationFactorNoise_ = node_->declare_parameter<double>("sensor_params.imuOrientationFactorNoise", 0.05);
@@ -470,6 +474,15 @@ void GraphMsfRos2::imuCallback(const sensor_msgs::msg::Imu::SharedPtr imuMsgPtr)
 void GraphMsfRos2::publishState(
     const std::shared_ptr<graph_msf::SafeIntegratedNavState>& integratedNavStatePtr,
     const std::shared_ptr<graph_msf::SafeNavStateWithCovarianceAndBias>& optimizedStateWithCovarianceAndBiasPtr) {
+  if (rosPublishRateHz_ > 0.0) {
+    const double stamp = integratedNavStatePtr->getTimeK();
+    std::lock_guard<std::mutex> lock(rosPublishGateMutex_);
+    if (stamp >= lastRosPublishTime_ &&
+        stamp - lastRosPublishTime_ < 1.0 / rosPublishRateHz_) {
+      return;
+    }
+    lastRosPublishTime_ = stamp;
+  }
   // Covariances
   Eigen::Matrix<double, 6, 6> poseCovarianceRos, twistCovarianceRos;
   graph_msf::GraphMsfRos2::extractCovariancesFromOptimizedState(poseCovarianceRos, twistCovarianceRos,
