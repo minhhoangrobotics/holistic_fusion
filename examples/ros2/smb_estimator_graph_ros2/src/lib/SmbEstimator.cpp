@@ -8,6 +8,7 @@ Please see the LICENSE file that has been included as part of this package.
 // Implementation
 #include "smb_estimator_graph_ros2/SmbEstimator.h"
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 
@@ -65,6 +66,7 @@ void SmbEstimator::setup() {
   // Wheel Radius (double)
   node_->declare_parameter("sensor_params.wheelRadius", 0.0);
   lioLegMaxHorizontalError_ = node_->declare_parameter<double>("sensor_params.lioLegMaxHorizontalError", 1.2);
+  useLioLegConsistencyGate_ = node_->declare_parameter<bool>("sensor_params.useLioLegConsistencyGate", true);
   lioLegMaxVerticalError_ = node_->declare_parameter<double>("sensor_params.lioLegMaxVerticalError", 0.6);
   lioLegMaxYawError_ = node_->declare_parameter<double>("sensor_params.lioLegMaxYawError", 0.6);
 
@@ -169,28 +171,34 @@ void SmbEstimator::lidarOdometryCallback_(const nav_msgs::msg::Odometry::ConstSh
     return;
   }
 
-  Eigen::Isometry3d legPose;
-  if (!legPoseAt_(lidarOdometryTimeK, legPose)) {
-    RCLCPP_WARN_THROTTLE(node_->get_logger(), *node_->get_clock(), 5000,
-                         "Waiting for leg odometry near LiDAR stamp; LiDAR factor held");
-    return;
-  }
-  if (!lioLegReferenceReady_) {
-    lioFromLeg_ = lio_T_M_Lk * legPose.inverse();
-    lioLegReferenceReady_ = true;
-  } else {
-    const Eigen::Isometry3d error = (lioFromLeg_ * legPose).inverse() * lio_T_M_Lk;
-    const double horizontalError = error.translation().head<2>().norm();
-    const double verticalError = std::abs(error.translation().z());
-    const double yawError = std::abs(std::atan2(error.rotation()(1, 0), error.rotation()(0, 0)));
-    if (horizontalError > lioLegMaxHorizontalError_ ||
-        verticalError > lioLegMaxVerticalError_ ||
-        yawError > lioLegMaxYawError_) {
+  if (useLioLegConsistencyGate_) {
+    Eigen::Isometry3d legPose;
+    if (!legPoseAt_(lidarOdometryTimeK, legPose)) {
       RCLCPP_WARN_THROTTLE(node_->get_logger(), *node_->get_clock(), 5000,
-                           "Rejecting drifting KISS pose: leg disagreement xy=%.2f m, z=%.2f m, yaw=%.2f rad",
-                           horizontalError, verticalError, yawError);
+                           "Waiting for leg odometry near LiDAR stamp; LiDAR factor held");
       return;
     }
+    if (!lioLegReferenceReady_) {
+      lioFromLeg_ = lio_T_M_Lk * legPose.inverse();
+      lioLegReferenceReady_ = true;
+    } else {
+      const Eigen::Isometry3d error = (lioFromLeg_ * legPose).inverse() * lio_T_M_Lk;
+      const double horizontalError = error.translation().head<2>().norm();
+      const double verticalError = std::abs(error.translation().z());
+      const double yawError = std::abs(std::atan2(error.rotation()(1, 0), error.rotation()(0, 0)));
+      if (horizontalError > lioLegMaxHorizontalError_ ||
+          verticalError > lioLegMaxVerticalError_ ||
+          yawError > lioLegMaxYawError_) {
+        RCLCPP_WARN_THROTTLE(node_->get_logger(), *node_->get_clock(), 5000,
+                             "Rejecting drifting KISS pose: leg disagreement xy=%.2f m, z=%.2f m, yaw=%.2f rad",
+                             horizontalError, verticalError, yawError);
+        return;
+      }
+    }
+    // Compare motion since the last accepted LiDAR pose. A fixed initial
+    // LiDAR-to-leg anchor turns normal long-term leg drift into a permanent
+    // LiDAR rejection after the robot has walked across the map.
+    lioFromLeg_ = lio_T_M_Lk * legPose.inverse();
   }
 
   if (areYawAndPositionInited()) {
@@ -265,10 +273,11 @@ void SmbEstimator::wheelOdometryPoseCallback_(const nav_msgs::msg::Odometry::Con
           graph_msf::RobustNorm::None(), wheelOdometryTimeK, 1.0, Eigen::Isometry3d::Identity(), Eigen::MatrixXd::Identity(6, 1));
       graph_msf::GraphMsf::initYawAndPosition(unary6DMeasurement);
     }
-  } else if (wheelOdometryCallbackCounter_ % 5 == 0 && wheelOdometryCallbackCounter_ > 0) {
+  } else if (wheelOdometryTimeK - wheelOdometryTimeKm1_ >=
+             1.0 / std::max(1.0, wheelOdometryBetweenRate_)) {
     Eigen::Isometry3d T_Bkm1_Bk = T_O_Bw_km1_.inverse() * T_O_Bw_k;
     graph_msf::BinaryMeasurementXD<Eigen::Isometry3d, 6> delta6DMeasurement(
-        "Wheel_odometry_6D", int(wheelOdometryBetweenRate_ / 5), wheelOdometryFrame, wheelOdometryFrame + sensorFrameCorrectedNameId,
+        "Wheel_odometry_6D", int(wheelOdometryBetweenRate_), wheelOdometryFrame, wheelOdometryFrame + sensorFrameCorrectedNameId,
         graph_msf::RobustNorm::Huber(2.0), wheelOdometryTimeKm1_, wheelOdometryTimeK, T_Bkm1_Bk, wheelPoseBetweenNoise_);
     this->addBinaryPose3Measurement(delta6DMeasurement);
 

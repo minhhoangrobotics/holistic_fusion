@@ -35,8 +35,9 @@ void GraphMsfRos2::setup(std::shared_ptr<StaticTransforms> staticTransformsPtr) 
   node_->declare_parameter("sensor_params.imuBufferLength", 800);
   node_->declare_parameter("sensor_params.imuTimeOffset", 0.0);
   rosPublishRateHz_ = node_->declare_parameter<double>("ros_publish_rate_hz", 0.0);
-  if (rosPublishRateHz_ < 0.0) {
-    throw std::invalid_argument("ros_publish_rate_hz must be nonnegative");
+  tfPublishRateHz_ = node_->declare_parameter<double>("tf_publish_rate_hz", 0.0);
+  if (rosPublishRateHz_ < 0.0 || tfPublishRateHz_ < 0.0) {
+    throw std::invalid_argument("ROS and TF publish rates must be nonnegative");
   }
   useImuOrientationFactor_ = node_->declare_parameter<bool>("sensor_params.useImuOrientationFactor", false);
   imuOrientationFactorRate_ = node_->declare_parameter<double>("sensor_params.imuOrientationFactorRate", 10.0);
@@ -474,15 +475,34 @@ void GraphMsfRos2::imuCallback(const sensor_msgs::msg::Imu::SharedPtr imuMsgPtr)
 void GraphMsfRos2::publishState(
     const std::shared_ptr<graph_msf::SafeIntegratedNavState>& integratedNavStatePtr,
     const std::shared_ptr<graph_msf::SafeNavStateWithCovarianceAndBias>& optimizedStateWithCovarianceAndBiasPtr) {
-  if (rosPublishRateHz_ > 0.0) {
-    const double stamp = integratedNavStatePtr->getTimeK();
+  const double timeK = integratedNavStatePtr->getTimeK();
+  bool publish_tf = true;
+  bool publish_ros = true;
+  {
     std::lock_guard<std::mutex> lock(rosPublishGateMutex_);
-    if (stamp >= lastRosPublishTime_ &&
-        stamp - lastRosPublishTime_ < 1.0 / rosPublishRateHz_) {
-      return;
-    }
-    lastRosPublishTime_ = stamp;
+    const double tf_rate = tfPublishRateHz_ > 0.0 ? tfPublishRateHz_ : rosPublishRateHz_;
+    publish_tf = tf_rate <= 0.0 || timeK < lastTfPublishTime_ ||
+        timeK - lastTfPublishTime_ >= 1.0 / tf_rate;
+    publish_ros = rosPublishRateHz_ <= 0.0 || timeK < lastRosPublishTime_ ||
+        timeK - lastRosPublishTime_ >= 1.0 / rosPublishRateHz_;
+    if (publish_tf) lastTfPublishTime_ = timeK;
+    if (publish_ros) lastRosPublishTime_ = timeK;
   }
+  if (publish_tf) {
+    // Publish scan-critical TF directly from the IMU callback. Covariance,
+    // paths and DDS work in the ROS publisher thread cannot hold these TFs.
+    const Eigen::Isometry3d T_B_Ok =
+        staticTransformsPtr_->rv_T_frame1_frame2(staticTransformsPtr_->getBaseLinkFrame(),
+                                                 staticTransformsPtr_->getImuFrame()) *
+        integratedNavStatePtr->getT_O_Ik_gravityAligned().inverse();
+    publishTfTreeTransform(staticTransformsPtr_->getOdomFrame(),
+                           staticTransformsPtr_->getBaseLinkFrame(), timeK, T_B_Ok.inverse());
+    publishTfTreeTransform(staticTransformsPtr_->getWorldFrame(),
+                           staticTransformsPtr_->getOdomFrame(), timeK,
+                           integratedNavStatePtr->getT_W_O());
+  }
+  if (!publish_ros) return;
+
   // Covariances
   Eigen::Matrix<double, 6, 6> poseCovarianceRos, twistCovarianceRos;
   graph_msf::GraphMsfRos2::extractCovariancesFromOptimizedState(poseCovarianceRos, twistCovarianceRos,
@@ -514,19 +534,24 @@ void GraphMsfRos2::publishNonTimeCriticalData(
   // Odometry messages
   publishImuOdoms(integratedNavStatePtr, poseCovarianceRos, twistCovarianceRos);
 
-  // Publish to TF
-  // Publish the conventional world -> odom -> base_link tree. The estimates
-  // below were originally computed in the opposite direction.
-  // B_O
-  Eigen::Isometry3d T_B_Ok = staticTransformsPtr_->rv_T_frame1_frame2(staticTransformsPtr_->getBaseLinkFrame(),
-                                                                      staticTransformsPtr_->getImuFrame()) *
-                             integratedNavStatePtr->getT_O_Ik_gravityAligned().inverse();
-  publishTfTreeTransform(staticTransformsPtr_->getOdomFrame(), staticTransformsPtr_->getBaseLinkFrame(), timeK,
-                         T_B_Ok.inverse());
-  // O_W
-  Eigen::Isometry3d T_O_W = integratedNavStatePtr->getT_W_O().inverse();
-  publishTfTreeTransform(staticTransformsPtr_->getWorldFrame(), staticTransformsPtr_->getOdomFrame(), timeK,
-                         T_O_W.inverse());
+  // Publish the latest GTSAM-corrected state propagated by IMU at 10 Hz.
+  // Optimizer updates alone may be slower than the navigation control loop.
+  if (pubOptWorldBaseFiltered_->get_subscription_count() > 0 &&
+      (lastFilteredBasePublishTime_ == 0.0 || timeK - lastFilteredBasePublishTime_ >= 0.095)) {
+    const Eigen::Isometry3d T_I_B = staticTransformsPtr_->rv_T_frame1_frame2(
+        staticTransformsPtr_->getImuFrame(), staticTransformsPtr_->getBaseLinkFrame());
+    const Eigen::Matrix3d R_B_I = T_I_B.rotation().transpose();
+    const Eigen::Vector3d w_I = integratedNavStatePtr->getI_w_W_I();
+    const Eigen::Vector3d v_B = R_B_I *
+        (integratedNavStatePtr->getI_v_W_I() + w_I.cross(T_I_B.translation()));
+    const Eigen::Vector3d w_B = R_B_I * w_I;
+    addToOdometryMsg(optWorldBaseFilteredMsgPtr_, staticTransformsPtr_->getWorldFrame(),
+                     staticTransformsPtr_->getBaseLinkFrame(), rclcpp::Time(timeK * 1e9),
+                     integratedNavStatePtr->getT_W_Ik() * T_I_B,
+                     v_B, w_B, poseCovarianceRos, twistCovarianceRos);
+    pubOptWorldBaseFiltered_->publish(*optWorldBaseFilteredMsgPtr_);
+    lastFilteredBasePublishTime_ = timeK;
+  }
 
   // Publish Variances
   publishDiagVarianceVectors(positionVarianceRos, orientationVarianceRos, timeK);
@@ -558,24 +583,6 @@ void GraphMsfRos2::publishOptimizedStateAndBias(
                        optimizedStateWithCovarianceAndBiasPtr->getI_v_W_I(),
                        optimizedStateWithCovarianceAndBiasPtr->getI_w_W_I(), poseCovarianceRos, twistCovarianceRos);
       pubOptWorldImu_->publish(*optWorldImuMsgPtr_);
-    }
-
-    // The optimized GTSAM state is expressed at the IMU. Convert it to the
-    // robot base for mapping and navigation, including the lever-arm velocity.
-    if (pubOptWorldBaseFiltered_->get_subscription_count() > 0) {
-      const Eigen::Isometry3d T_I_B = staticTransformsPtr_->rv_T_frame1_frame2(
-          staticTransformsPtr_->getImuFrame(), staticTransformsPtr_->getBaseLinkFrame());
-      const Eigen::Matrix3d R_B_I = T_I_B.rotation().transpose();
-      const Eigen::Vector3d w_I = optimizedStateWithCovarianceAndBiasPtr->getI_w_W_I();
-      const Eigen::Vector3d v_B = R_B_I *
-          (optimizedStateWithCovarianceAndBiasPtr->getI_v_W_I() + w_I.cross(T_I_B.translation()));
-      const Eigen::Vector3d w_B = R_B_I * w_I;
-      addToOdometryMsg(optWorldBaseFilteredMsgPtr_, staticTransformsPtr_->getWorldFrame(),
-                       staticTransformsPtr_->getBaseLinkFrame(),
-                       rclcpp::Time(optimizedStateWithCovarianceAndBiasPtr->getTimeK() * 1e9),
-                       optimizedStateWithCovarianceAndBiasPtr->getT_W_Ik() * T_I_B,
-                       v_B, w_B, poseCovarianceRos, twistCovarianceRos);
-      pubOptWorldBaseFiltered_->publish(*optWorldBaseFilteredMsgPtr_);
     }
 
     // Path

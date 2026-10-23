@@ -96,6 +96,7 @@ class SmbEstimator : public graph_msf::GraphMsfRos2 {
   std::deque<nav_msgs::msg::Odometry::ConstSharedPtr> recentLegOdometry_;
   std::mutex recentLegOdometryMutex_;
   bool lioLegReferenceReady_ = false;
+  bool useLioLegConsistencyGate_ = true;
   Eigen::Isometry3d lioFromLeg_ = Eigen::Isometry3d::Identity();
   double lioLegMaxHorizontalError_ = 1.2;
   double lioLegMaxVerticalError_ = 0.6;
