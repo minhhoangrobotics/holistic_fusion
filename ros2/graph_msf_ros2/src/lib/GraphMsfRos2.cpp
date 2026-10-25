@@ -1,6 +1,8 @@
 // Implementation
 #include "graph_msf_ros2/GraphMsfRos2.h"
 #include "graph_msf/core/GraphManager.h"
+#include <algorithm>
+#include <cmath>
 
 // ROS2
 #include <tf2/LinearMath/Quaternion.h>
@@ -36,8 +38,9 @@ void GraphMsfRos2::setup(std::shared_ptr<StaticTransforms> staticTransformsPtr) 
   node_->declare_parameter("sensor_params.imuTimeOffset", 0.0);
   rosPublishRateHz_ = node_->declare_parameter<double>("ros_publish_rate_hz", 0.0);
   tfPublishRateHz_ = node_->declare_parameter<double>("tf_publish_rate_hz", 0.0);
-  if (rosPublishRateHz_ < 0.0 || tfPublishRateHz_ < 0.0) {
-    throw std::invalid_argument("ROS and TF publish rates must be nonnegative");
+  worldOdomCorrectionTau_ = node_->declare_parameter<double>("world_odom_correction_tau", 0.0);
+  if (rosPublishRateHz_ < 0.0 || tfPublishRateHz_ < 0.0 || worldOdomCorrectionTau_ < 0.0) {
+    throw std::invalid_argument("ROS/TF rates and world correction time constant must be nonnegative");
   }
   useImuOrientationFactor_ = node_->declare_parameter<bool>("sensor_params.useImuOrientationFactor", false);
   imuOrientationFactorRate_ = node_->declare_parameter<double>("sensor_params.imuOrientationFactorRate", 10.0);
@@ -478,8 +481,26 @@ void GraphMsfRos2::publishState(
   const double timeK = integratedNavStatePtr->getTimeK();
   bool publish_tf = true;
   bool publish_ros = true;
+  Eigen::Isometry3d publishedWorldFromOdom;
   {
     std::lock_guard<std::mutex> lock(rosPublishGateMutex_);
+    const Eigen::Isometry3d& target = integratedNavStatePtr->getT_W_O();
+    if (!worldCorrectionInitialized_ || timeK < lastWorldCorrectionTime_ ||
+        worldOdomCorrectionTau_ == 0.0) {
+      publishedWorldFromOdom_ = target;
+      worldCorrectionInitialized_ = true;
+    } else {
+      const double dt = std::max(0.0, timeK - lastWorldCorrectionTime_);
+      const double alpha = 1.0 - std::exp(-dt / worldOdomCorrectionTau_);
+      publishedWorldFromOdom_.translation() =
+          (1.0 - alpha) * publishedWorldFromOdom_.translation() + alpha * target.translation();
+      const Eigen::Quaterniond previous(publishedWorldFromOdom_.rotation());
+      const Eigen::Quaterniond measured(target.rotation());
+      publishedWorldFromOdom_.linear() =
+          previous.normalized().slerp(alpha, measured.normalized()).toRotationMatrix();
+    }
+    lastWorldCorrectionTime_ = timeK;
+    publishedWorldFromOdom = publishedWorldFromOdom_;
     const double tf_rate = tfPublishRateHz_ > 0.0 ? tfPublishRateHz_ : rosPublishRateHz_;
     publish_tf = tf_rate <= 0.0 || timeK < lastTfPublishTime_ ||
         timeK - lastTfPublishTime_ >= 1.0 / tf_rate;
@@ -499,7 +520,7 @@ void GraphMsfRos2::publishState(
                            staticTransformsPtr_->getBaseLinkFrame(), timeK, T_B_Ok.inverse());
     publishTfTreeTransform(staticTransformsPtr_->getWorldFrame(),
                            staticTransformsPtr_->getOdomFrame(), timeK,
-                           integratedNavStatePtr->getT_W_O());
+                           publishedWorldFromOdom);
   }
   if (!publish_ros) return;
 
@@ -515,7 +536,8 @@ void GraphMsfRos2::publishState(
   // Publish non-time critical data in a separate thread
   std::thread publishNonTimeCriticalDataThread(&GraphMsfRos2::publishNonTimeCriticalData, this, poseCovarianceRos,
                                                twistCovarianceRos, positionVarianceRos, orientationVarianceRos,
-                                               integratedNavStatePtr, optimizedStateWithCovarianceAndBiasPtr);
+                                               integratedNavStatePtr, optimizedStateWithCovarianceAndBiasPtr,
+                                               publishedWorldFromOdom);
   publishNonTimeCriticalDataThread.detach();
 }
 
@@ -524,7 +546,8 @@ void GraphMsfRos2::publishNonTimeCriticalData(
     const Eigen::Matrix<double, 6, 6> poseCovarianceRos, const Eigen::Matrix<double, 6, 6> twistCovarianceRos,
     const Eigen::Vector3d positionVarianceRos, const Eigen::Vector3d orientationVarianceRos,
     const std::shared_ptr<const graph_msf::SafeIntegratedNavState> integratedNavStatePtr,
-    const std::shared_ptr<const graph_msf::SafeNavStateWithCovarianceAndBias> optimizedStateWithCovarianceAndBiasPtr) {
+    const std::shared_ptr<const graph_msf::SafeNavStateWithCovarianceAndBias> optimizedStateWithCovarianceAndBiasPtr,
+    const Eigen::Isometry3d publishedWorldFromOdom) {
   // Mutex for not overloading ROS
   std::lock_guard<std::mutex> lock(rosPublisherMutex_);
 
@@ -547,7 +570,7 @@ void GraphMsfRos2::publishNonTimeCriticalData(
     const Eigen::Vector3d w_B = R_B_I * w_I;
     addToOdometryMsg(optWorldBaseFilteredMsgPtr_, staticTransformsPtr_->getWorldFrame(),
                      staticTransformsPtr_->getBaseLinkFrame(), rclcpp::Time(timeK * 1e9),
-                     integratedNavStatePtr->getT_W_Ik() * T_I_B,
+                     publishedWorldFromOdom * integratedNavStatePtr->getT_O_Ik_gravityAligned() * T_I_B,
                      v_B, w_B, poseCovarianceRos, twistCovarianceRos);
     pubOptWorldBaseFiltered_->publish(*optWorldBaseFilteredMsgPtr_);
     lastFilteredBasePublishTime_ = timeK;

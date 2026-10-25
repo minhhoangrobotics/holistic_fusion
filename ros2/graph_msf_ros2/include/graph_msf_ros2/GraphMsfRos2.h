@@ -88,7 +88,8 @@ class GraphMsfRos2 : public GraphMsfClassic, public GraphMsfHolistic {
       const Eigen::Matrix<double, 6, 6> poseCovarianceRos, const Eigen::Matrix<double, 6, 6> twistCovarianceRos,
       const Eigen::Vector3d positionVarianceRos, const Eigen::Vector3d orientationVarianceRos,
       const std::shared_ptr<const graph_msf::SafeIntegratedNavState> integratedNavStatePtr,
-      const std::shared_ptr<const graph_msf::SafeNavStateWithCovarianceAndBias> optimizedStateWithCovarianceAndBiasPtr);
+      const std::shared_ptr<const graph_msf::SafeNavStateWithCovarianceAndBias> optimizedStateWithCovarianceAndBiasPtr,
+      const Eigen::Isometry3d publishedWorldFromOdom);
   void publishOptimizedStateAndBias(
       const std::shared_ptr<const graph_msf::SafeNavStateWithCovarianceAndBias> optimizedStateWithCovarianceAndBiasPtr,
       const Eigen::Matrix<double, 6, 6>& poseCovarianceRos, const Eigen::Matrix<double, 6, 6>& twistCovarianceRos);
@@ -176,6 +177,10 @@ class GraphMsfRos2 : public GraphMsfClassic, public GraphMsfHolistic {
   double lastFilteredBasePublishTime_ = 0.0;
   double rosPublishRateHz_ = 0.0;
   double tfPublishRateHz_ = 0.0;
+  double worldOdomCorrectionTau_ = 0.0;
+  double lastWorldCorrectionTime_ = 0.0;
+  bool worldCorrectionInitialized_ = false;
+  Eigen::Isometry3d publishedWorldFromOdom_ = Eigen::Isometry3d::Identity();
   double lastRosPublishTime_ = 0.0;
   double lastTfPublishTime_ = 0.0;
   std::mutex rosPublishGateMutex_;
