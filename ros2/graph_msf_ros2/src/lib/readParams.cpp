@@ -7,6 +7,7 @@ Please see the LICENSE file that has been included as part of node_ package.
 
 // C++
 #include <filesystem>
+#include <stdexcept>
 
 // Implementation
 #include "graph_msf_ros2/GraphMsfRos2.h"
@@ -33,6 +34,16 @@ void GraphMsfRos2::readParams() {
       tryGetParam<double>(node_, "sensor_params.imuLowPassFilterCutoffFreq");
   graphConfigPtr_->maxSearchDeviation_ =
       1.0 / (graphConfigPtr_->imuRate_ / graphConfigPtr_->createStateEveryNthImuMeasurement_);
+  // The nominal graph-key period can be exceeded by one delayed IMU callback
+  // under simulation load. Allow a bounded, robot-specific timestamp margin
+  // without changing the timestamps on the LiDAR measurements themselves.
+  if (node_->has_parameter("sensor_params.maxSearchDeviation")) {
+    const double configured = tryGetParam<double>(node_, "sensor_params.maxSearchDeviation");
+    if (configured < graphConfigPtr_->maxSearchDeviation_ || configured > 0.10) {
+      throw std::invalid_argument("sensor_params.maxSearchDeviation must be between the graph-key period and 0.10 s");
+    }
+    graphConfigPtr_->maxSearchDeviation_ = configured;
+  }
   graphConfigPtr_->imuBufferLength_ = tryGetParam<int>(node_, "sensor_params.imuBufferLength");
   graphConfigPtr_->imuTimeOffset_ = tryGetParam<double>(node_, "sensor_params.imuTimeOffset");
 

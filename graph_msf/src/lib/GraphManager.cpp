@@ -337,7 +337,10 @@ bool GraphManager::getUnaryFactorGeneralKey(gtsam::Key& returnedKey, double& ret
     else {  // Otherwise do not add it
       REGULAR_COUT << RED_START << " Time deviation of " << typeid(unaryMeasurement).name() << " at key " << returnedKey << " is "
                    << 1000 * std::abs(returnedGraphTime - unaryMeasurement.timeK()) << " ms, being larger than admissible deviation of "
-                   << 1000 * graphConfigPtr_->maxSearchDeviation_ << " ms. Not adding to graph." << COLOR_END << std::endl;
+                   << 1000 * graphConfigPtr_->maxSearchDeviation_ << " ms (signed key-measurement "
+                   << 1000 * (returnedGraphTime - unaryMeasurement.timeK()) << " ms, latest propagated-measurement "
+                   << 1000 * (propagatedStateTime_ - unaryMeasurement.timeK())
+                   << " ms). Not adding to graph." << COLOR_END << std::endl;
       return false;
     }
   }
