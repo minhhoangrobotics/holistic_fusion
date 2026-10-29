@@ -57,6 +57,8 @@ if(BUILD_TESTING)
     find_package(ament_cmake_gtest REQUIRED)
     ament_add_gtest(test_time_graph_key_buffer test/test_time_graph_key_buffer.cpp)
     target_link_libraries(test_time_graph_key_buffer ${PROJECT_NAME})
+    ament_add_gtest(test_graph_propagation_timing test/test_graph_propagation_timing.cpp)
+    target_link_libraries(test_graph_propagation_timing ${PROJECT_NAME})
 endif()
 
 # Optional: Clang tooling

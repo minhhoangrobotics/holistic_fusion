@@ -16,12 +16,23 @@ Please see the LICENSE file that has been included as part of this package.
 #include "smb_estimator_graph_ros2/SmbStaticTransforms.h"
 
 // Workspace
+#include "graph_msf/core/GraphManager.h"
 #include "graph_msf/measurements/BinaryMeasurementXD.h"
 #include "graph_msf/measurements/UnaryMeasurementXD.h"
 #include "graph_msf_ros2/util/conversions.h"
 #include "smb_estimator_graph_ros2/constants.h"
 
 namespace smb_se {
+
+namespace {
+Eigen::Isometry3d interpolatePose(const Eigen::Isometry3d& first, const Eigen::Isometry3d& second, const double fraction) {
+  Eigen::Isometry3d result = Eigen::Isometry3d::Identity();
+  result.translation() = first.translation() + fraction * (second.translation() - first.translation());
+  result.linear() = Eigen::Quaterniond(first.rotation()).slerp(
+      fraction, Eigen::Quaterniond(second.rotation())).normalized().toRotationMatrix();
+  return result;
+}
+}  // namespace
 
 SmbEstimator::SmbEstimator(std::shared_ptr<rclcpp::Node>& node) : graph_msf::GraphMsfRos2(node) {
   REGULAR_COUT << GREEN_START << " SmbEstimator-Constructor called." << COLOR_END << std::endl;
@@ -33,9 +44,12 @@ SmbEstimator::SmbEstimator(std::shared_ptr<rclcpp::Node>& node) : graph_msf::Gra
 
 void SmbEstimator::setup() {
   REGULAR_COUT << GREEN_START << " SmbEstimator-Setup called." << COLOR_END << std::endl;
+  RCLCPP_INFO(node_->get_logger(),
+              "Fusion timing: LiDAR and leg poses interpolated at graph keys; velocity evaluated near interval midpoint");
 
   // Boolean flags
   node_->declare_parameter("sensor_params.useLioOdometry", false);
+  node_->declare_parameter("sensor_params.useLioVelocityFactor", false);
   node_->declare_parameter("sensor_params.useWheelOdometryBetween", false);
   node_->declare_parameter("sensor_params.useWheelLinearVelocities", false);
   node_->declare_parameter("sensor_params.useVioOdometry", false);
@@ -52,6 +66,7 @@ void SmbEstimator::setup() {
 
   // Noise parameters (vectors of double)
   node_->declare_parameter("noise_params.lioPoseUnaryNoiseDensity", std::vector<double>{0.0, 0.0, 0.0, 0.0, 0.0, 0.0});
+  node_->declare_parameter("noise_params.lioVelocityLocalNoiseDensity", std::vector<double>{0.3, 0.3, 0.4});
   node_->declare_parameter("noise_params.wheelPoseBetweenNoiseDensity", std::vector<double>{0.0, 0.0, 0.0, 0.0, 0.0, 0.0});
   node_->declare_parameter("noise_params.wheelLinearVelocitiesNoiseDensity", std::vector<double>{0.0, 0.0, 0.0});
   node_->declare_parameter("noise_params.vioPoseBetweenNoiseDensity", std::vector<double>{0.0, 0.0, 0.0, 0.0, 0.0, 0.0});
@@ -162,11 +177,6 @@ void SmbEstimator::lidarOdometryCallback_(const nav_msgs::msg::Odometry::ConstSh
 
   const std::string& lioOdometryFrame = dynamic_cast<SmbStaticTransforms*>(staticTransformsPtr_.get())->getLioOdometryFrame();
 
-  graph_msf::UnaryMeasurementXDAbsolute<Eigen::Isometry3d, 6> unary6DMeasurement(
-      "Lidar_unary_6D", int(lioOdometryRate_), lioOdometryFrame, lioOdometryFrame + sensorFrameCorrectedNameId,
-      graph_msf::RobustNorm::Huber(2.0), lidarOdometryTimeK, 1.0, lio_T_M_Lk, lioPoseUnaryNoise_, odomLidarPtr->header.frame_id,
-      staticTransformsPtr_->getWorldFrame(), initialSe3AlignmentNoise_, lioSe3AlignmentRandomWalk_);
-
   if (lidarOdometryCallbackCounter__ <= 2) {
     return;
   }
@@ -201,11 +211,59 @@ void SmbEstimator::lidarOdometryCallback_(const nav_msgs::msg::Odometry::ConstSh
     lioFromLeg_ = lio_T_M_Lk * legPose.inverse();
   }
 
-  if (areYawAndPositionInited()) {
-    this->addUnaryPose3AbsoluteMeasurement(unary6DMeasurement);
-  } else {
-    this->initYawAndPosition(unary6DMeasurement);
+  // A graph key may be tens of milliseconds away from the LiDAR stamp.
+  // Interpolate the measured trajectory to an existing key inside the last
+  // scan interval, rather than assigning the current pose to a different time.
+  double poseFactorTime = lidarOdometryTimeK;
+  Eigen::Isometry3d poseAtKey = lio_T_M_Lk;
+  bool havePoseAtKey = true;
+  if (isGraphInited()) {
+    havePoseAtKey = lastLioVelocityTime_ > 0.0 &&
+        graphMgrPtr_->getGraphTimeAtOrBefore(lidarOdometryTimeK, poseFactorTime) &&
+        poseFactorTime > lastLioVelocityTime_ && poseFactorTime <= lidarOdometryTimeK;
+    if (havePoseAtKey) {
+      poseAtKey = interpolatePose(lastLioVelocityPose_, lio_T_M_Lk,
+          (poseFactorTime - lastLioVelocityTime_) / (lidarOdometryTimeK - lastLioVelocityTime_));
+    }
   }
+  if (havePoseAtKey) {
+    graph_msf::UnaryMeasurementXDAbsolute<Eigen::Isometry3d, 6> unary6DMeasurement(
+        "Lidar_unary_6D", int(lioOdometryRate_), lioOdometryFrame, lioOdometryFrame + sensorFrameCorrectedNameId,
+        graph_msf::RobustNorm::Huber(2.0), poseFactorTime, 1.0, poseAtKey, lioPoseUnaryNoise_, odomLidarPtr->header.frame_id,
+        staticTransformsPtr_->getWorldFrame(), initialSe3AlignmentNoise_, lioSe3AlignmentRandomWalk_);
+    if (areYawAndPositionInited()) {
+      this->addUnaryPose3AbsoluteMeasurement(unary6DMeasurement);
+    } else {
+      this->initYawAndPosition(unary6DMeasurement);
+    }
+  }
+
+  // A LiDAR pose factor corrects position but leaves the high-rate IMU
+  // propagation free to acquire a false translational velocity during
+  // in-place turns. Constrain that velocity using the same time-stamped
+  // LiDAR motion, expressed in the base sensor frame.
+  if (useLioVelocityFactor_ && lastLioVelocityTime_ > 0.0) {
+    const double dt = lidarOdometryTimeK - lastLioVelocityTime_;
+    double velocityFactorTime;
+    // A finite difference measures average velocity around the interval's
+    // midpoint. Its local frame must also be evaluated at the selected key.
+    if (dt >= 0.05 && dt <= 0.25 &&
+        graphMgrPtr_->getGraphTimeAtOrBefore(0.5 * (lastLioVelocityTime_ + lidarOdometryTimeK), velocityFactorTime) &&
+        velocityFactorTime >= lastLioVelocityTime_) {
+      const Eigen::Isometry3d velocityFrame = interpolatePose(lastLioVelocityPose_, lio_T_M_Lk,
+          (velocityFactorTime - lastLioVelocityTime_) / dt);
+      const Eigen::Vector3d velocityLocal = velocityFrame.rotation().transpose() *
+          (lio_T_M_Lk.translation() - lastLioVelocityPose_.translation()) / dt;
+      graph_msf::UnaryMeasurementXD<Eigen::Vector3d, 3> velocityMeasurement(
+          "Lidar_local_velocity_3D", int(lioOdometryRate_), lioOdometryFrame,
+          lioOdometryFrame + sensorFrameCorrectedNameId,
+          graph_msf::RobustNorm::Huber(2.0), velocityFactorTime, 1.0,
+          velocityLocal, lioVelocityLocalNoise_);
+      this->addUnaryVelocity3LocalMeasurement(velocityMeasurement);
+    }
+  }
+  lastLioVelocityPose_ = lio_T_M_Lk;
+  lastLioVelocityTime_ = lidarOdometryTimeK;
 
   addToPathMsg(measLio_mapImuPathPtr_, odomLidarPtr->header.frame_id, odomLidarPtr->header.stamp,
                (lio_T_M_Lk * staticTransformsPtr_->rv_T_frame1_frame2(lioOdometryFrame, staticTransformsPtr_->getImuFrame()).matrix())
@@ -218,22 +276,39 @@ void SmbEstimator::lidarOdometryCallback_(const nav_msgs::msg::Odometry::ConstSh
 bool SmbEstimator::legPoseAt_(double stamp, Eigen::Isometry3d& pose) {
   std::lock_guard<std::mutex> lock(recentLegOdometryMutex_);
   if (recentLegOdometry_.empty()) return false;
-  auto nearest = recentLegOdometry_.begin();
-  double nearestError = std::numeric_limits<double>::infinity();
-  for (auto it = recentLegOdometry_.begin(); it != recentLegOdometry_.end(); ++it) {
-    const auto& t = (*it)->header.stamp;
-    const double error = std::abs(t.sec + t.nanosec * 1e-9 - stamp);
-    if (error < nearestError) {
-      nearest = it;
-      nearestError = error;
+  nav_msgs::msg::Odometry::ConstSharedPtr previous;
+  double previousTime = 0.0;
+  for (const auto& current : recentLegOdometry_) {
+    const auto& t = current->header.stamp;
+    const double currentTime = t.sec + t.nanosec * 1e-9;
+    if (std::abs(currentTime - stamp) < 1e-6) {
+      graph_msf::odomMsgToEigen(*current, pose.matrix());
+      return pose.matrix().allFinite();
     }
+    if (currentTime > stamp) {
+      if (!previous || currentTime - previousTime > 0.20) return false;
+      Eigen::Isometry3d first, second;
+      graph_msf::odomMsgToEigen(*previous, first.matrix());
+      graph_msf::odomMsgToEigen(*current, second.matrix());
+      pose = interpolatePose(first, second, (stamp - previousTime) / (currentTime - previousTime));
+      return pose.matrix().allFinite();
+    }
+    previous = current;
+    previousTime = currentTime;
   }
-  if (nearestError > 0.2) return false;
-  graph_msf::odomMsgToEigen(**nearest, pose.matrix());
-  return pose.matrix().allFinite();
+  return false;
 }
 
 void SmbEstimator::wheelOdometryPoseCallback_(const nav_msgs::msg::Odometry::ConstSharedPtr& wheelOdometryKPtr) {
+  if (!std::isfinite(wheelOdometryKPtr->pose.covariance[0]) ||
+      wheelOdometryKPtr->pose.covariance[0] < 0.0) {
+    // No verified support foot. Reset the between-factor baseline so a later
+    // contact cannot bridge an airborne or pushed interval.
+    wheelOdometryCallbackCounter_ = -1;
+    std::lock_guard<std::mutex> lock(recentLegOdometryMutex_);
+    recentLegOdometry_.clear();
+    return;
+  }
   Eigen::Isometry3d T_O_Bw_k;
   graph_msf::odomMsgToEigen(*wheelOdometryKPtr, T_O_Bw_k.matrix());
   double wheelOdometryTimeK = wheelOdometryKPtr->header.stamp.sec + wheelOdometryKPtr->header.stamp.nanosec * 1e-9;
@@ -252,6 +327,13 @@ void SmbEstimator::wheelOdometryPoseCallback_(const nav_msgs::msg::Odometry::Con
   }
   if (!areRollAndPitchInited()) return;
 
+  if (isGraphInited()) {
+    double graphTime;
+    if (!graphMgrPtr_->getGraphTimeAtOrBefore(wheelOdometryTimeK, graphTime) ||
+        !legPoseAt_(graphTime, T_O_Bw_k)) return;
+    wheelOdometryTimeK = graphTime;
+  }
+
   ++wheelOdometryCallbackCounter_;
 
   if (wheelOdometryCallbackCounter_ == 0) {
@@ -260,7 +342,12 @@ void SmbEstimator::wheelOdometryPoseCallback_(const nav_msgs::msg::Odometry::Con
     return;
   }
   if (wheelOdometryTimeK <= wheelOdometryTimeKm1_) {
-    RCLCPP_WARN_THROTTLE(node_->get_logger(), *node_->get_clock(), 5000, "Ignoring out-of-order leg odometry");
+    // Many 100 Hz leg samples share the same 20 Hz graph key.
+    return;
+  }
+  if (wheelOdometryTimeK - wheelOdometryTimeKm1_ > 0.20) {
+    T_O_Bw_km1_ = T_O_Bw_k;
+    wheelOdometryTimeKm1_ = wheelOdometryTimeK;
     return;
   }
 

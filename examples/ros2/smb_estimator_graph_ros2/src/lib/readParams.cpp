@@ -7,6 +7,9 @@ Please see the LICENSE file that has been included as part of this package.
 
 // Implementation
 #include "smb_estimator_graph_ros2/SmbEstimator.h"
+#include <algorithm>
+#include <cmath>
+#include <stdexcept>
 
 // Project
 #include "smb_estimator_graph_ros2/SmbStaticTransforms.h"
@@ -25,6 +28,7 @@ void SmbEstimator::readParams() {
 
   // Flags
   useLioOdometryFlag_ = graph_msf::tryGetParam<bool>(node_, "sensor_params.useLioOdometry");
+  useLioVelocityFactor_ = graph_msf::tryGetParam<bool>(node_, "sensor_params.useLioVelocityFactor");
   useWheelOdometryBetweenFlag_ = graph_msf::tryGetParam<bool>(node_, "sensor_params.useWheelOdometryBetween");
   useWheelLinearVelocitiesFlag_ = graph_msf::tryGetParam<bool>(node_, "sensor_params.useWheelLinearVelocities");
   useVioOdometryFlag_ = graph_msf::tryGetParam<bool>(node_, "sensor_params.useVioOdometry");
@@ -50,6 +54,14 @@ void SmbEstimator::readParams() {
   const auto poseUnaryNoise =
       graph_msf::tryGetParam<std::vector<double>>(node_, "noise_params.lioPoseUnaryNoiseDensity");  // roll,pitch,yaw,x,y,z
   lioPoseUnaryNoise_ << poseUnaryNoise[0], poseUnaryNoise[1], poseUnaryNoise[2], poseUnaryNoise[3], poseUnaryNoise[4], poseUnaryNoise[5];
+  const auto lioVelocityNoise =
+      graph_msf::tryGetParam<std::vector<double>>(node_, "noise_params.lioVelocityLocalNoiseDensity");
+  if (lioVelocityNoise.size() != 3 ||
+      std::any_of(lioVelocityNoise.begin(), lioVelocityNoise.end(),
+                  [](double value) { return !std::isfinite(value) || value <= 0.0; })) {
+    throw std::invalid_argument("lioVelocityLocalNoiseDensity must contain three positive finite values");
+  }
+  lioVelocityLocalNoise_ << lioVelocityNoise[0], lioVelocityNoise[1], lioVelocityNoise[2];
   /// Wheel Odometry
   /// Between
   const auto wheelPoseBetweenNoise =

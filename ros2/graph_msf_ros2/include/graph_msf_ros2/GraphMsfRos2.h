@@ -178,6 +178,8 @@ class GraphMsfRos2 : public GraphMsfClassic, public GraphMsfHolistic {
   double rosPublishRateHz_ = 0.0;
   double tfPublishRateHz_ = 0.0;
   double worldOdomCorrectionTau_ = 0.0;
+  double worldOdomCorrectionMaxLinearRate_ = 0.0;
+  double worldOdomCorrectionMaxAngularRate_ = 0.0;
   double lastWorldCorrectionTime_ = 0.0;
   bool worldCorrectionInitialized_ = false;
   Eigen::Isometry3d publishedWorldFromOdom_ = Eigen::Isometry3d::Identity();

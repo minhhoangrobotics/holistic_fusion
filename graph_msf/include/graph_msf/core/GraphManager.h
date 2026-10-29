@@ -68,6 +68,8 @@ class GraphManager {
   void addImuFactorAndGetState(SafeIntegratedNavState& returnPreIntegratedNavState,
                                std::shared_ptr<SafeNavStateWithCovarianceAndBias>& newOptimizedNavStatePtr,
                                const std::shared_ptr<ImuBuffer>& imuBufferPtr, double imuTimeK, bool createNewStateFlag);
+  bool hasGraphStateAtTime(double timestamp);
+  bool getGraphTimeAtOrBefore(double timestamp, double& graphTime);
 
   // All other measurements -----------------------------------------------------
 
@@ -191,6 +193,8 @@ class GraphManager {
   Eigen::Isometry3d T_W_O_ = Eigen::Isometry3d::Identity();  // Current state pose, depending on whether propagated state jumps or not
   gtsam::Key propagatedStateKey_ = 0;                        // Current state key, always start with 0
   double propagatedStateTime_ = 0.0;                         // Current state time
+  double propagatedKeyTime_ = 0.0;                           // Timestamp of propagatedStateKey_, before IMU extrapolation
+  gtsam::Vector3 propagatedKeyAngularVelocity_ = gtsam::Vector3::Zero();
   double lastOptimizedStateTime_ = 0.0;                      // Last optimized state time
   gtsam::Vector3 currentAngularVelocity_ = gtsam::Vector3(0, 0, 0);
 

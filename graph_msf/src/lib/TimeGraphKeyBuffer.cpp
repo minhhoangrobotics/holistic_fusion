@@ -12,6 +12,20 @@ Please see the LICENSE file that has been included as part of this package.
 
 namespace graph_msf {
 
+bool TimeGraphKeyBuffer::getKeyAtOrBefore(double& tInGraph, gtsam::Key& key,
+                                        const double maxSearchDeviation, const double tK) {
+  const std::lock_guard<std::mutex> lock(writeInBufferMutex_);
+  tInGraph = 0.0;
+  key = 0;
+  auto upper = timeToKeyBuffer_.upper_bound(tK);
+  if (upper == timeToKeyBuffer_.begin()) return false;
+  const auto atOrBefore = std::prev(upper);
+  if (tK - atOrBefore->first > maxSearchDeviation) return false;
+  tInGraph = atOrBefore->first;
+  key = atOrBefore->second;
+  return true;
+}
+
 void TimeGraphKeyBuffer::addToBuffer(const double ts, const gtsam::Key& key) {
   if (verboseLevel_ >= 5) {
     std::cout << YELLOW_START << "GMsf-TimeKeyBuffer" << COLOR_END << " Adding key " << key << " to timeToKeyBuffer for time "

@@ -28,3 +28,19 @@ TEST(TimeGraphKeyBuffer, EvictsMatchingKeyAndReplacesDuplicateTimestamp) {
   EXPECT_EQ(buffer.getKeyToTimeBuffer().count(10), 0u);
   EXPECT_EQ(buffer.getKeyToTimeBuffer().at(21), 2.0);
 }
+
+TEST(TimeGraphKeyBuffer, SelectsPastKeyForInterpolationWithoutExtrapolation) {
+  graph_msf::TimeGraphKeyBuffer buffer(3, 0);
+  double stamp;
+  gtsam::Key key;
+  EXPECT_FALSE(buffer.getKeyAtOrBefore(stamp, key, 0.07, 1.0));
+  buffer.addToBuffer(1.00, 10);
+  buffer.addToBuffer(1.05, 11);
+  EXPECT_TRUE(buffer.getKeyAtOrBefore(stamp, key, 0.07, 1.04));
+  EXPECT_EQ(key, 10u);
+  EXPECT_DOUBLE_EQ(stamp, 1.00);
+  EXPECT_TRUE(buffer.getKeyAtOrBefore(stamp, key, 0.07, 1.05));
+  EXPECT_EQ(key, 11u);
+  EXPECT_FALSE(buffer.getKeyAtOrBefore(stamp, key, 0.07, 0.99));
+  EXPECT_FALSE(buffer.getKeyAtOrBefore(stamp, key, 0.07, 1.20));
+}

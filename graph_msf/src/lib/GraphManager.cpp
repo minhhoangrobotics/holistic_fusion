@@ -39,6 +39,7 @@ namespace graph_msf {
 // Public --------------------------------------------------------------------
 GraphManager::GraphManager(std::shared_ptr<GraphConfig> graphConfigPtr, std::string imuFrame, std::string worldFrame)
     : graphConfigPtr_(std::move(graphConfigPtr)), imuFrame_(std::move(imuFrame)), worldFrame_(std::move(worldFrame)) {
+  REGULAR_COUT << "IMU propagation: preserve graph-key-to-current interval across optimization" << std::endl;
   // Buffer
   rtFactorGraphBufferPtr_ = std::make_shared<gtsam::NonlinearFactorGraph>();
   batchFactorGraphBufferPtr_ = std::make_shared<gtsam::NonlinearFactorGraph>();
@@ -187,11 +188,23 @@ bool GraphManager::initPoseVelocityBiasGraph(const double timeStamp, const gtsam
                                              gtsam::Vector3(0, 0, 0), *imuBiasPriorPtr_);
   O_imuPropagatedState_ = gtsam::NavState(T_O_I0, gtsam::Vector3(0, 0, 0));
   W_imuPropagatedState_ = gtsam::NavState(T_W_I0, gtsam::Vector3(0, 0, 0));
-  T_W_O_ = (T_W_I0.inverse() * T_O_I0).matrix();
+  T_W_O_ = (T_W_I0 * T_O_I0.inverse()).matrix();
+  propagatedStateTime_ = timeStamp;
+  propagatedKeyTime_ = timeStamp;
   return true;
 }
 
 // IMU at the core --------------------------------------------------------------
+bool GraphManager::hasGraphStateAtTime(const double timestamp) {
+  const std::lock_guard<std::mutex> lock(operateOnGraphDataMutex_);
+  return std::abs(propagatedKeyTime_ - timestamp) < 1e-6;
+}
+
+bool GraphManager::getGraphTimeAtOrBefore(const double timestamp, double& graphTime) {
+  gtsam::Key key;
+  return timeToKeyBufferPtr_->getKeyAtOrBefore(graphTime, key, graphConfigPtr_->maxSearchDeviation_, timestamp);
+}
+
 void GraphManager::addImuFactorAndGetState(SafeIntegratedNavState& returnPreIntegratedNavState,
                                            std::shared_ptr<SafeNavStateWithCovarianceAndBias>& newOptimizedNavStatePtr,
                                            const std::shared_ptr<ImuBuffer>& imuBufferPtr, const double imuTimeK, bool createNewStateFlag) {
@@ -258,6 +271,8 @@ void GraphManager::addImuFactorAndGetState(SafeIntegratedNavState& returnPreInte
     // Get new key
     const gtsam::Key oldKey = propagatedStateKey_;
     const gtsam::Key newKey = newPropagatedStateKey_();
+    propagatedKeyTime_ = imuTimeK;
+    propagatedKeyAngularVelocity_ = currentAngularVelocity_;
 
     // Add to time key buffer
     timeToKeyBufferPtr_->addToBuffer(imuTimeK, newKey);
@@ -485,8 +500,8 @@ void GraphManager::updateGraph() {
     const std::lock_guard<std::mutex> operateOnGraphDataLock(operateOnGraphDataMutex_);
     // Get current key and time
     currentPropagatedKey = propagatedStateKey_;
-    currentPropagatedTime = propagatedStateTime_;
-    currentAngularVelocity = currentAngularVelocity_;
+    currentPropagatedTime = propagatedKeyTime_;
+    currentAngularVelocity = propagatedKeyAngularVelocity_;
     // Get copy of factors and values and empty buffers
     newRtGraphFactors = *rtFactorGraphBufferPtr_;
     newRtGraphValues = *rtGraphValuesBufferPtr_;
@@ -503,13 +518,12 @@ void GraphManager::updateGraph() {
       batchGraphKeysTimestampsMapBufferPtr_->clear();
     }
 
-    // Empty Buffer Pre-integrator --> everything missed during the update will
-    // be in here
-    if (graphConfigPtr_->usingBiasForPreIntegrationFlag_) {
-      imuBufferPreintegratorPtr_->resetIntegrationAndSetBias(optimizedGraphState_.imuBias());
-    } else {
-      imuBufferPreintegratorPtr_->resetIntegrationAndSetBias(gtsam::imuBias::ConstantBias());
-    }
+    // The solution is at currentPropagatedKey, not at the latest IMU stamp.
+    // Keep the already integrated interval from that key to this snapshot;
+    // incoming IMU samples append the interval spent optimizing. Resetting
+    // here loses up to (createStateEveryNthImuMeasurement - 1) IMU samples
+    // on every optimization and makes the corrected pose lag/jump in motion.
+    *imuBufferPreintegratorPtr_ = *imuStepPreintegratorPtr_;
   }  // end of locking
 
   // Log Update Duration

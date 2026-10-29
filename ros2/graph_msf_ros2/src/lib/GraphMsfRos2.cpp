@@ -39,7 +39,12 @@ void GraphMsfRos2::setup(std::shared_ptr<StaticTransforms> staticTransformsPtr) 
   rosPublishRateHz_ = node_->declare_parameter<double>("ros_publish_rate_hz", 0.0);
   tfPublishRateHz_ = node_->declare_parameter<double>("tf_publish_rate_hz", 0.0);
   worldOdomCorrectionTau_ = node_->declare_parameter<double>("world_odom_correction_tau", 0.0);
-  if (rosPublishRateHz_ < 0.0 || tfPublishRateHz_ < 0.0 || worldOdomCorrectionTau_ < 0.0) {
+  worldOdomCorrectionMaxLinearRate_ = node_->declare_parameter<double>(
+      "world_odom_correction_max_linear_rate", 0.0);
+  worldOdomCorrectionMaxAngularRate_ = node_->declare_parameter<double>(
+      "world_odom_correction_max_angular_rate", 0.0);
+  if (rosPublishRateHz_ < 0.0 || tfPublishRateHz_ < 0.0 || worldOdomCorrectionTau_ < 0.0 ||
+      worldOdomCorrectionMaxLinearRate_ < 0.0 || worldOdomCorrectionMaxAngularRate_ < 0.0) {
     throw std::invalid_argument("ROS/TF rates and world correction time constant must be nonnegative");
   }
   useImuOrientationFactor_ = node_->declare_parameter<bool>("sensor_params.useImuOrientationFactor", false);
@@ -428,6 +433,7 @@ void GraphMsfRos2::imuCallback(const sensor_msgs::msg::Imu::SharedPtr imuMsgPtr)
           preIntegratedNavStatePtr, optimizedStateWithCovarianceAndBiasPtr, addedImuMeasurements)) {
     const double imuTime = imuMsgPtr->header.stamp.sec + 1e-9 * imuMsgPtr->header.stamp.nanosec;
     if (useImuOrientationFactor_ && GraphMsf::isGraphInited() && GraphMsf::getNormalOperationFlag() &&
+        graphMgrPtr_->hasGraphStateAtTime(imuTime) &&
         imuMsgPtr->orientation_covariance[0] >= 0.0 &&
         imuTime - lastImuOrientationFactorTime_ >= 1.0 / imuOrientationFactorRate_) {
       Eigen::Quaterniond rawOrientation(imuMsgPtr->orientation.w, imuMsgPtr->orientation.x,
@@ -482,6 +488,13 @@ void GraphMsfRos2::publishState(
   bool publish_tf = true;
   bool publish_ros = true;
   Eigen::Isometry3d publishedWorldFromOdom;
+  // Rate-limit the correction at the robot, not at the odom frame origin.
+  // Rotating world->odom around a distant origin otherwise moves base_link
+  // by metres even when the optimized base pose changes only slightly.
+  const Eigen::Isometry3d odomFromBase =
+      integratedNavStatePtr->getT_O_Ik_gravityAligned() *
+      staticTransformsPtr_->rv_T_frame1_frame2(staticTransformsPtr_->getImuFrame(),
+                                               staticTransformsPtr_->getBaseLinkFrame());
   {
     std::lock_guard<std::mutex> lock(rosPublishGateMutex_);
     const Eigen::Isometry3d& target = integratedNavStatePtr->getT_W_O();
@@ -492,12 +505,29 @@ void GraphMsfRos2::publishState(
     } else {
       const double dt = std::max(0.0, timeK - lastWorldCorrectionTime_);
       const double alpha = 1.0 - std::exp(-dt / worldOdomCorrectionTau_);
-      publishedWorldFromOdom_.translation() =
-          (1.0 - alpha) * publishedWorldFromOdom_.translation() + alpha * target.translation();
+      const Eigen::Vector3d baseInOdom = odomFromBase.translation();
+      const Eigen::Vector3d currentBaseInWorld = publishedWorldFromOdom_ * baseInOdom;
+      const Eigen::Vector3d targetBaseInWorld = target * baseInOdom;
+      Eigen::Vector3d baseTranslationStep = alpha * (targetBaseInWorld - currentBaseInWorld);
+      const double maxTranslationStep = worldOdomCorrectionMaxLinearRate_ * dt;
+      if (worldOdomCorrectionMaxLinearRate_ > 0.0 &&
+          baseTranslationStep.norm() > maxTranslationStep && maxTranslationStep > 0.0) {
+        baseTranslationStep *= maxTranslationStep / baseTranslationStep.norm();
+      }
       const Eigen::Quaterniond previous(publishedWorldFromOdom_.rotation());
       const Eigen::Quaterniond measured(target.rotation());
+      double angularAlpha = alpha;
+      if (worldOdomCorrectionMaxAngularRate_ > 0.0 && dt > 0.0) {
+        const double angularDistance = previous.angularDistance(measured);
+        if (angularDistance > 0.0) {
+          angularAlpha = std::min(alpha,
+              worldOdomCorrectionMaxAngularRate_ * dt / angularDistance);
+        }
+      }
       publishedWorldFromOdom_.linear() =
-          previous.normalized().slerp(alpha, measured.normalized()).toRotationMatrix();
+          previous.normalized().slerp(angularAlpha, measured.normalized()).toRotationMatrix();
+      publishedWorldFromOdom_.translation() =
+          currentBaseInWorld + baseTranslationStep - publishedWorldFromOdom_.linear() * baseInOdom;
     }
     lastWorldCorrectionTime_ = timeK;
     publishedWorldFromOdom = publishedWorldFromOdom_;

@@ -68,6 +68,10 @@ class SmbEstimator : public graph_msf::GraphMsfRos2 {
   // Noise
   // LiDAR Odometry
   Eigen::Matrix<double, 6, 1> lioPoseUnaryNoise_;
+  Eigen::Matrix<double, 3, 1> lioVelocityLocalNoise_;
+  Eigen::Isometry3d lastLioVelocityPose_ = Eigen::Isometry3d::Identity();
+  double lastLioVelocityTime_ = 0.0;
+  bool useLioVelocityFactor_ = false;
   // Wheel Odometry
   // Between
   Eigen::Matrix<double, 6, 1> wheelPoseBetweenNoise_;
