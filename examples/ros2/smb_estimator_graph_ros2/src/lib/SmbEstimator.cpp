@@ -7,6 +7,7 @@ Please see the LICENSE file that has been included as part of this package.
 
 // Implementation
 #include "smb_estimator_graph_ros2/SmbEstimator.h"
+#include "smb_estimator_graph_ros2/PoseCovariance.h"
 
 #include <algorithm>
 #include <cmath>
@@ -50,6 +51,9 @@ void SmbEstimator::setup() {
   // Boolean flags
   node_->declare_parameter("sensor_params.useLioOdometry", false);
   node_->declare_parameter("sensor_params.useLioVelocityFactor", false);
+  useLioPoseCovariance_=node_->declare_parameter<bool>("sensor_params.useLioPoseCovariance",false);
+  if(useLioPoseCovariance_)RCLCPP_INFO(node_->get_logger(),
+      "LiDAR fusion: full pose likelihood covariance; derived LiDAR velocity factor disabled");
   node_->declare_parameter("sensor_params.useWheelOdometryBetween", false);
   node_->declare_parameter("sensor_params.useWheelLinearVelocities", false);
   node_->declare_parameter("sensor_params.useVioOdometry", false);
@@ -172,6 +176,15 @@ void SmbEstimator::lidarOdometryCallback_(const nav_msgs::msg::Odometry::ConstSh
     RCLCPP_WARN_THROTTLE(node_->get_logger(), *node_->get_clock(), 5000, "Ignoring invalid or out-of-order LiDAR odometry");
     return;
   }
+  PoseCovariance covariance=PoseCovariance::Identity();
+  if(useLioPoseCovariance_) {
+    covariance=Eigen::Map<const Eigen::Matrix<double,6,6,Eigen::RowMajor>>(odomLidarPtr->pose.covariance.data());
+    if(!validPoseCovariance(covariance) || odomLidarPtr->child_frame_id!=
+        dynamic_cast<SmbStaticTransforms*>(staticTransformsPtr_.get())->getLioOdometryFrame()) {
+      RCLCPP_WARN_THROTTLE(node_->get_logger(),*node_->get_clock(),5000,
+          "Ignoring LiDAR likelihood with invalid covariance or sensor frame");return;
+    }
+  }
   lastLidarOdometryTime = lidarOdometryTimeK;
   ++lidarOdometryCallbackCounter__;
 
@@ -227,10 +240,23 @@ void SmbEstimator::lidarOdometryCallback_(const nav_msgs::msg::Odometry::ConstSh
     }
   }
   if (havePoseAtKey) {
+    PoseCovariance factorCovariance=covariance;
+    if(useLioPoseCovariance_ && lastLioVelocityTime_>0) {
+      const double u=(poseFactorTime-lastLioVelocityTime_)/(lidarOdometryTimeK-lastLioVelocityTime_);
+      // Conservative interpolation: preserve null directions at either scan.
+      factorCovariance=(1-u)*lastLioPoseCovariance_+u*covariance;
+    }
     graph_msf::UnaryMeasurementXDAbsolute<Eigen::Isometry3d, 6> unary6DMeasurement(
         "Lidar_unary_6D", int(lioOdometryRate_), lioOdometryFrame, lioOdometryFrame + sensorFrameCorrectedNameId,
-        graph_msf::RobustNorm::Huber(2.0), poseFactorTime, 1.0, poseAtKey, lioPoseUnaryNoise_, odomLidarPtr->header.frame_id,
+        graph_msf::RobustNorm::Huber(2.0), poseFactorTime, useLioPoseCovariance_?1e9:1.0, poseAtKey, lioPoseUnaryNoise_, odomLidarPtr->header.frame_id,
         staticTransformsPtr_->getWorldFrame(), initialSe3AlignmentNoise_, lioSe3AlignmentRandomWalk_);
+    if(useLioPoseCovariance_) {
+      factorCovariance=poseResidualCovariance(factorCovariance,poseAtKey.rotation());
+      // Configured model error is a lower bound, never a replacement for
+      // the measured anisotropy and rotation/translation cross covariance.
+      factorCovariance.diagonal()+=lioPoseUnaryNoise_.cwiseProduct(lioPoseUnaryNoise_);
+      unary6DMeasurement.setNoiseCovariance(factorCovariance);
+    }
     if (areYawAndPositionInited()) {
       this->addUnaryPose3AbsoluteMeasurement(unary6DMeasurement);
     } else {
@@ -242,7 +268,7 @@ void SmbEstimator::lidarOdometryCallback_(const nav_msgs::msg::Odometry::ConstSh
   // propagation free to acquire a false translational velocity during
   // in-place turns. Constrain that velocity using the same time-stamped
   // LiDAR motion, expressed in the base sensor frame.
-  if (useLioVelocityFactor_ && lastLioVelocityTime_ > 0.0) {
+  if (useLioVelocityFactor_ && !useLioPoseCovariance_ && lastLioVelocityTime_ > 0.0) {
     const double dt = lidarOdometryTimeK - lastLioVelocityTime_;
     double velocityFactorTime;
     // A finite difference measures average velocity around the interval's
@@ -262,6 +288,7 @@ void SmbEstimator::lidarOdometryCallback_(const nav_msgs::msg::Odometry::ConstSh
       this->addUnaryVelocity3LocalMeasurement(velocityMeasurement);
     }
   }
+  lastLioPoseCovariance_=covariance;
   lastLioVelocityPose_ = lio_T_M_Lk;
   lastLioVelocityTime_ = lidarOdometryTimeK;
 

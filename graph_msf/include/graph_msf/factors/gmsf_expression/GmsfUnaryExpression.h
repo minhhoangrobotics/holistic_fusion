@@ -99,6 +99,11 @@ class GmsfUnaryExpression {
   // Noise as GTSAM Datatype
   virtual const gtsam::Vector getNoiseDensity() const = 0;
 
+  virtual gtsam::Matrix getNoiseCovariance() const {
+    const gtsam::Vector sigma=getNoiseDensity();
+    return sigma.cwiseProduct(sigma).asDiagonal();
+  }
+
   // Return Measurement as GTSAM Datatype
   virtual const GTSAM_MEASUREMENT_TYPE getGtsamMeasurementValue() const = 0;
 

@@ -42,6 +42,10 @@ class GmsfUnaryExpressionAbsolutePose3 final : public GmsfUnaryExpressionAbsolut
   // Noise as GTSAM Datatype
   [[nodiscard]] const gtsam::Vector getNoiseDensity() const final { return gmsfPoseUnaryMeasurementPtr_->unaryMeasurementNoiseDensity(); }
 
+  gtsam::Matrix getNoiseCovariance() const override {
+    return gmsfPoseUnaryMeasurementPtr_->unaryMeasurementNoiseCovariance();
+  }
+
  protected:
   // i) Generate Expression for Basic IMU State in World Frame at Key -------------------------------------
   void generateImuStateInWorldFrameAtKey(const gtsam::Key& closestGeneralKey) final {

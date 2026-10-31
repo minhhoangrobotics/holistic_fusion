@@ -72,6 +72,8 @@ class SmbEstimator : public graph_msf::GraphMsfRos2 {
   Eigen::Isometry3d lastLioVelocityPose_ = Eigen::Isometry3d::Identity();
   double lastLioVelocityTime_ = 0.0;
   bool useLioVelocityFactor_ = false;
+  bool useLioPoseCovariance_ = false;
+  Eigen::Matrix<double,6,6> lastLioPoseCovariance_=Eigen::Matrix<double,6,6>::Identity();
   // Wheel Odometry
   // Between
   Eigen::Matrix<double, 6, 1> wheelPoseBetweenNoise_;

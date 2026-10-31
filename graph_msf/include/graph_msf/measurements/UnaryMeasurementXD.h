@@ -9,6 +9,8 @@ Please see the LICENSE file that has been included as part of this package.
 #define GRAPH_MSF_UNARYMEASUREMENTXD_H
 
 #include "graph_msf/measurements/UnaryMeasurement.h"
+#include <Eigen/Cholesky>
+#include <stdexcept>
 
 namespace graph_msf {
 
@@ -41,7 +43,8 @@ class UnaryMeasurementXD : public virtual UnaryMeasurement {
                          covarianceViolationThreshold),
         unaryMeasurement_(unaryMeasurement),
         unaryMeasurementNoiseDensity_(unaryMeasurementNoiseDensity),
-        unaryMeasurementNoiseVariances_(unaryMeasurementNoiseDensity.cwiseProduct(unaryMeasurementNoiseDensity)) {}
+        unaryMeasurementNoiseVariances_(unaryMeasurementNoiseDensity.cwiseProduct(unaryMeasurementNoiseDensity)),
+        unaryMeasurementNoiseCovariance_(unaryMeasurementNoiseVariances_.asDiagonal()) {}
 
   // Destructor
   ~UnaryMeasurementXD() override = default;
@@ -65,7 +68,19 @@ class UnaryMeasurementXD : public virtual UnaryMeasurement {
   MEASUREMENT_TYPE& unaryMeasurement() { return unaryMeasurement_; }
   const Eigen::Matrix<double, DIM, 1>& unaryMeasurementNoiseDensity() const { return unaryMeasurementNoiseDensity_; }
   const Eigen::Matrix<double, DIM, 1>& unaryMeasurementNoiseVariances() const { return unaryMeasurementNoiseVariances_; }
-  const Eigen::Matrix<double, DIM, DIM> unaryMeasurementNoiseCovariance() const { return unaryMeasurementNoiseVariances_.asDiagonal(); }
+  const Eigen::Matrix<double, DIM, DIM> unaryMeasurementNoiseCovariance() const { return unaryMeasurementNoiseCovariance_; }
+
+  // Covariance is expressed in the measurement residual tangent coordinates.
+  void setNoiseCovariance(const Eigen::Matrix<double,DIM,DIM>& covariance) {
+    const Eigen::Matrix<double,DIM,DIM> symmetric=.5*(covariance+covariance.transpose());
+    Eigen::LDLT<Eigen::Matrix<double,DIM,DIM>> ldlt(symmetric);
+    if(!covariance.allFinite() || !covariance.isApprox(covariance.transpose(),1e-8) ||
+       ldlt.info()!=Eigen::Success || !ldlt.isPositive() || ldlt.vectorD().minCoeff()<=0)
+      throw std::invalid_argument("Measurement covariance must be finite and positive definite");
+    unaryMeasurementNoiseCovariance_=symmetric;
+    unaryMeasurementNoiseVariances_=symmetric.diagonal();
+    unaryMeasurementNoiseDensity_=unaryMeasurementNoiseVariances_.cwiseSqrt();
+  }
 
   // Modifiers
   MEASUREMENT_TYPE& lv_unaryMeasurement() { return unaryMeasurement_; }
@@ -74,6 +89,7 @@ class UnaryMeasurementXD : public virtual UnaryMeasurement {
   MEASUREMENT_TYPE unaryMeasurement_;
   Eigen::Matrix<double, DIM, 1> unaryMeasurementNoiseDensity_;    // StdDev
   Eigen::Matrix<double, DIM, 1> unaryMeasurementNoiseVariances_;  // Variances
+  Eigen::Matrix<double,DIM,DIM> unaryMeasurementNoiseCovariance_;
 };
 
 }  // namespace graph_msf

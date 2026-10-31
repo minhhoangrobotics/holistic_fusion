@@ -78,7 +78,7 @@ void GraphManager::addUnaryGmsfExpressionFactor(const std::shared_ptr<GMSF_EXPRE
   std::shared_ptr<gtsam::ExpressionFactor<typename GMSF_EXPRESSION_TYPE::template_type>> unaryExpressionFactorPtr;
 
   // Noise & Error Function
-  auto noiseModel = gtsam::noiseModel::Diagonal::Sigmas(gmsfUnaryExpressionPtr->getNoiseDensity());  // rad,rad,rad,x,y,z
+  auto noiseModel = gtsam::noiseModel::Gaussian::Covariance(gmsfUnaryExpressionPtr->getNoiseCovariance());  // rad,rad,rad,x,y,z
   // Robust Error Function?
   const RobustNormEnum robustNormEnum(gmsfUnaryExpressionPtr->getGmsfBaseUnaryMeasurementPtr()->robustNormEnum());
   const double robustNormConstant = gmsfUnaryExpressionPtr->getGmsfBaseUnaryMeasurementPtr()->robustNormConstant();
