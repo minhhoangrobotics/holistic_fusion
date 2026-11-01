@@ -52,6 +52,7 @@ void SmbEstimator::setup() {
   node_->declare_parameter("sensor_params.useLioOdometry", false);
   node_->declare_parameter("sensor_params.useLioVelocityFactor", false);
   useLioPoseCovariance_=node_->declare_parameter<bool>("sensor_params.useLioPoseCovariance",false);
+  lioTimingPublisher_=node_->create_publisher<std_msgs::msg::Float64MultiArray>("/graph_msf/lio_factor_timing",10);
   if(useLioPoseCovariance_)RCLCPP_INFO(node_->get_logger(),
       "LiDAR fusion: full pose likelihood covariance; derived LiDAR velocity factor disabled");
   node_->declare_parameter("sensor_params.useWheelOdometryBetween", false);
@@ -165,6 +166,14 @@ void SmbEstimator::imuCallback(const sensor_msgs::msg::Imu::SharedPtr imuPtr) {
 }
 
 void SmbEstimator::lidarOdometryCallback_(const nav_msgs::msg::Odometry::ConstSharedPtr& odomLidarPtr) {
+  const auto timingStart=std::chrono::steady_clock::now();
+  const double inputStamp=rclcpp::Time(odomLidarPtr->header.stamp).seconds();
+  std_msgs::msg::Float64MultiArray timing;timing.data={inputStamp,node_->now().seconds()-inputStamp,0,0,0,0};
+  auto finish=[&]{if(!rclcpp::ok(node_->get_node_base_interface()->get_context()))return;
+    timing.data[5]=std::chrono::duration<double>(std::chrono::steady_clock::now()-timingStart).count();
+    timing.layout.dim.resize(1);timing.layout.dim[0].size=6;timing.layout.dim[0].stride=6;
+    timing.layout.dim[0].label="lidar_stamp,receipt_age_s,graph_key_stamp,interpolation_lag_s,factor_requested,callback_s";lioTimingPublisher_->publish(timing);};
+  struct TimingExit {decltype(finish)& callback;~TimingExit(){callback();}} timingExit{finish};
   static int lidarOdometryCallbackCounter__ = -1;
   static double lastLidarOdometryTime = -std::numeric_limits<double>::infinity();
 
@@ -240,6 +249,7 @@ void SmbEstimator::lidarOdometryCallback_(const nav_msgs::msg::Odometry::ConstSh
     }
   }
   if (havePoseAtKey) {
+    timing.data[2]=poseFactorTime;timing.data[3]=lidarOdometryTimeK-poseFactorTime;timing.data[4]=1;
     PoseCovariance factorCovariance=covariance;
     if(useLioPoseCovariance_ && lastLioVelocityTime_>0) {
       const double u=(poseFactorTime-lastLioVelocityTime_)/(lidarOdometryTimeK-lastLioVelocityTime_);

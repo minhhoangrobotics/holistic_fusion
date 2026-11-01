@@ -12,6 +12,7 @@ Please see the LICENSE file that has been included as part of this package.
 #include <chrono>
 #include <mutex>
 #include <vector>
+#include <optional>
 
 // GTSAM
 #include <gtsam/nonlinear/ExpressionFactorGraph.h>
@@ -80,7 +81,8 @@ class GraphManager {
   typedef gtsam::Key (*F)(std::uint64_t);
   template <class MEASUREMENT_TYPE, int NOISE_DIM, class FACTOR_TYPE, F SYMBOL_SHORTHAND>
   void addUnaryFactorInImuFrame(const MEASUREMENT_TYPE& unaryMeasurement, const Eigen::Matrix<double, NOISE_DIM, 1>& unaryNoiseDensity,
-                                double measurementTime);
+                                double measurementTime,
+                                const std::optional<Eigen::Matrix<double,NOISE_DIM,NOISE_DIM>>& covariance=std::nullopt);
 
   // GMSF Holistic Graph Factors with Extrinsic Calibration ------------------------
   template <class GMSF_EXPRESSION_TYPE>

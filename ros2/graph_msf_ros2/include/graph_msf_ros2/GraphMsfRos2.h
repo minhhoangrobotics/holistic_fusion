@@ -151,6 +151,8 @@ class GraphMsfRos2 : public GraphMsfClassic, public GraphMsfHolistic {
   bool useImuOrientationFactor_ = false;
   double imuOrientationFactorRate_ = 10.0;
   double imuOrientationFactorNoise_ = 0.05;
+  bool useImuOrientationCovariance_=false;
+  double imuOrientationModelNoise_=0.001;
   double lastImuOrientationFactorTime_ = -1.0;
   bool imuOrientationYawAligned_ = false;
   double imuOrientationYawOffset_ = 0.0;

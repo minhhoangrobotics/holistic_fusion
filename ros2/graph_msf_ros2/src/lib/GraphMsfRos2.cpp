@@ -3,6 +3,9 @@
 #include "graph_msf/core/GraphManager.h"
 #include <algorithm>
 #include <cmath>
+#include <Eigen/Cholesky>
+#include <gtsam/slam/PoseRotationPrior.h>
+#include "graph_msf_ros2/util/pose_covariance.h"
 
 // ROS2
 #include <tf2/LinearMath/Quaternion.h>
@@ -50,6 +53,10 @@ void GraphMsfRos2::setup(std::shared_ptr<StaticTransforms> staticTransformsPtr) 
   useImuOrientationFactor_ = node_->declare_parameter<bool>("sensor_params.useImuOrientationFactor", false);
   imuOrientationFactorRate_ = node_->declare_parameter<double>("sensor_params.imuOrientationFactorRate", 10.0);
   imuOrientationFactorNoise_ = node_->declare_parameter<double>("sensor_params.imuOrientationFactorNoise", 0.05);
+  useImuOrientationCovariance_=node_->declare_parameter<bool>("sensor_params.useImuOrientationCovariance",false);
+  imuOrientationModelNoise_=node_->declare_parameter<double>("sensor_params.imuOrientationModelNoise",0.001);
+  if(!std::isfinite(imuOrientationModelNoise_) || imuOrientationModelNoise_<0)
+    throw std::invalid_argument("imuOrientationModelNoise must be finite and nonnegative");
   if (useImuOrientationFactor_ && (imuOrientationFactorRate_ <= 0.0 || imuOrientationFactorNoise_ <= 0.0)) {
     throw std::invalid_argument("IMU orientation factor rate and noise must be positive");
   }
@@ -325,9 +332,13 @@ void GraphMsfRos2::extractCovariancesFromOptimizedState(
     Eigen::Matrix<double, 6, 6>& poseCovarianceRos, Eigen::Matrix<double, 6, 6>& twistCovarianceRos,
     const std::shared_ptr<graph_msf::SafeNavStateWithCovarianceAndBias>& optimizedStateWithCovarianceAndBiasPtr) {
   // Extract covariances from optimized state
+  // Only linear-velocity covariance is available here. Initialize the other
+  // blocks explicitly rather than publishing uninitialized Eigen storage.
+  twistCovarianceRos.setZero();
   if (optimizedStateWithCovarianceAndBiasPtr != nullptr) {
-    poseCovarianceRos = graph_msf::convertCovarianceGtsamConventionToRosConvention(
-        optimizedStateWithCovarianceAndBiasPtr->getPoseCovariance());
+    poseCovarianceRos = spatialWorldPoseCovarianceAtOrigin(
+        optimizedStateWithCovarianceAndBiasPtr->getPoseCovariance(),
+        optimizedStateWithCovarianceAndBiasPtr->getT_W_Ik().translation());
     twistCovarianceRos.block<3, 3>(0, 0) = optimizedStateWithCovarianceAndBiasPtr->getVelocityCovariance();
   } else {
     poseCovarianceRos.setZero();
@@ -449,12 +460,28 @@ void GraphMsfRos2::imuCallback(const sensor_msgs::msg::Imu::SharedPtr imuMsgPtr)
                       imuOrientationYawOffset_);
         }
         const gtsam::Rot3 worldRotation = gtsam::Rot3::Yaw(imuOrientationYawOffset_) * rawRotation;
+        Eigen::Matrix3d attitudeCovariance=Eigen::Map<const Eigen::Matrix<double,3,3,Eigen::RowMajor>>(
+            imuMsgPtr->orientation_covariance.data());
+        const Eigen::LDLT<Eigen::Matrix3d> attitudeDecomposition(attitudeCovariance);
+        const bool validAttitudeCovariance=attitudeCovariance.allFinite() &&
+            attitudeCovariance.isApprox(attitudeCovariance.transpose(),1e-8) &&
+            attitudeDecomposition.info()==Eigen::Success && attitudeDecomposition.isPositive() &&
+            attitudeDecomposition.vectorD().minCoeff()>0;
+        if(useImuOrientationCovariance_ && validAttitudeCovariance) {
+          // EKF covariance is a right/body tangent in imu_link. Left yaw
+          // alignment changes neither this tangent nor its cross terms.
+          attitudeCovariance.diagonal().array()+=imuOrientationModelNoise_*imuOrientationModelNoise_;
+          graphMgrPtr_->addUnaryFactorInImuFrame<gtsam::Rot3,3,gtsam::PoseRotationPrior<gtsam::Pose3>,
+              gtsam::symbol_shorthand::X>(worldRotation,Eigen::Vector3d::Constant(imuOrientationFactorNoise_),
+                                          imuTime,attitudeCovariance);
+        } else {
         const gtsam::Pose3 posePrior(worldRotation, preIntegratedNavStatePtr->getT_W_Ik().translation());
         Eigen::Matrix<double, 6, 1> noise;
         noise << imuOrientationFactorNoise_, imuOrientationFactorNoise_, imuOrientationFactorNoise_,
                  100.0, 100.0, 100.0;
         graphMgrPtr_->addUnaryFactorInImuFrame<gtsam::Pose3, 6, gtsam::PriorFactor<gtsam::Pose3>,
                                                gtsam::symbol_shorthand::X>(posePrior, noise, imuTime);
+        }
         {
           const std::lock_guard<std::mutex> lock(optimizeGraphMutex_);
           optimizeGraphFlag_ = true;
@@ -598,10 +625,13 @@ void GraphMsfRos2::publishNonTimeCriticalData(
     const Eigen::Vector3d v_B = R_B_I *
         (integratedNavStatePtr->getI_v_W_I() + w_I.cross(T_I_B.translation()));
     const Eigen::Vector3d w_B = R_B_I * w_I;
+    const Eigen::Vector3d worldLever=(publishedWorldFromOdom *
+        integratedNavStatePtr->getT_O_Ik_gravityAligned()).rotation()*T_I_B.translation();
+    const auto basePoseCovariance=movePoseCovarianceOrigin(poseCovarianceRos,worldLever);
     addToOdometryMsg(optWorldBaseFilteredMsgPtr_, staticTransformsPtr_->getWorldFrame(),
                      staticTransformsPtr_->getBaseLinkFrame(), rclcpp::Time(timeK * 1e9),
                      publishedWorldFromOdom * integratedNavStatePtr->getT_O_Ik_gravityAligned() * T_I_B,
-                     v_B, w_B, poseCovarianceRos, twistCovarianceRos);
+                     v_B, w_B, basePoseCovariance, twistCovarianceRos);
     pubOptWorldBaseFiltered_->publish(*optWorldBaseFilteredMsgPtr_);
     lastFilteredBasePublishTime_ = timeK;
   }
@@ -775,10 +805,15 @@ void GraphMsfRos2::publishImuOdoms(
     const Eigen::Matrix<double, 6, 6>& poseCovarianceRos, const Eigen::Matrix<double, 6, 6>& twistCovarianceRos) const {
   // Odom->imu
   if (pubEstOdomImu_->get_subscription_count() > 0) {
+    const Eigen::Matrix3d R_O_W=preIntegratedNavStatePtr->getT_O_Ik_gravityAligned().rotation()*
+        preIntegratedNavStatePtr->getT_W_Ik().rotation().transpose();
+    Eigen::Matrix<double,6,6> Q=Eigen::Matrix<double,6,6>::Zero();
+    Q.topLeftCorner<3,3>()=R_O_W;Q.bottomRightCorner<3,3>()=R_O_W;
+    const Eigen::Matrix<double,6,6> odomPoseCovariance=Q*poseCovarianceRos*Q.transpose();
     addToOdometryMsg(estOdomImuMsgPtr_, staticTransformsPtr_->getOdomFrame(), staticTransformsPtr_->getImuFrame(),
                      rclcpp::Time(preIntegratedNavStatePtr->getTimeK() * 1e9),
                      preIntegratedNavStatePtr->getT_O_Ik_gravityAligned(), preIntegratedNavStatePtr->getI_v_W_I(),
-                     preIntegratedNavStatePtr->getI_w_W_I(), poseCovarianceRos, twistCovarianceRos);
+                     preIntegratedNavStatePtr->getI_w_W_I(), odomPoseCovariance, twistCovarianceRos);
     pubEstOdomImu_->publish(*estOdomImuMsgPtr_);
   }
   // World->imu
