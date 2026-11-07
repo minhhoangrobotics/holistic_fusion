@@ -17,6 +17,7 @@ Please see the LICENSE file that has been included as part of this package.
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
 #include <nav_msgs/msg/odometry.hpp>
+#include <std_msgs/msg/float64_multi_array.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/imu.hpp>
@@ -116,6 +117,7 @@ class SmbEstimator : public graph_msf::GraphMsfRos2 {
 
   // Publishers
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pubMeasMapLioPath_;
+  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr lioTimingPublisher_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pubMeasMapVioPath_;
 
   // Messages

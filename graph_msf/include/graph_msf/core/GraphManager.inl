@@ -14,7 +14,8 @@ namespace graph_msf {
 typedef gtsam::Key (*F)(std::uint64_t);
 template <class MEASUREMENT_TYPE, int NOISE_DIM, class FACTOR_TYPE, F SYMBOL_SHORTHAND>
 void GraphManager::addUnaryFactorInImuFrame(const MEASUREMENT_TYPE& unaryMeasurement,
-                                            const Eigen::Matrix<double, NOISE_DIM, 1>& unaryNoiseDensity, const double measurementTime) {
+                                            const Eigen::Matrix<double, NOISE_DIM, 1>& unaryNoiseDensity, const double measurementTime,
+                                            const std::optional<Eigen::Matrix<double,NOISE_DIM,NOISE_DIM>>& covariance) {
   // Find the closest key in existing graph
   double closestGraphTime;
   gtsam::Key closestKey;
@@ -27,8 +28,9 @@ void GraphManager::addUnaryFactorInImuFrame(const MEASUREMENT_TYPE& unaryMeasure
   }
 
   // Create noise model
-  auto noise = gtsam::noiseModel::Diagonal::Sigmas((gtsam::Vector(unaryNoiseDensity)));  // m,m,m
-  auto robustErrorFunction = gtsam::noiseModel::Robust::Create(gtsam::noiseModel::mEstimator::Huber::Create(1.345), noise);
+  gtsam::SharedNoiseModel noise=gtsam::noiseModel::Diagonal::Sigmas((gtsam::Vector(unaryNoiseDensity)));
+  if(covariance)noise=gtsam::noiseModel::Robust::Create(gtsam::noiseModel::mEstimator::Huber::Create(1.345),
+      gtsam::noiseModel::Gaussian::Covariance(*covariance));
 
   // Create unary factor and ADD IT
   std::shared_ptr<FACTOR_TYPE> unaryFactorPtr;
