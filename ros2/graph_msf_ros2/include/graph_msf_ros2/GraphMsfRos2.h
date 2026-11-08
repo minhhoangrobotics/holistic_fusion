@@ -3,6 +3,7 @@
 
 // std
 #include <chrono>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -15,6 +16,7 @@
 #include <nav_msgs/msg/path.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/imu.hpp>
+#include <std_msgs/msg/float64_multi_array.hpp>
 #include <std_srvs/srv/trigger.hpp>
 #include <visualization_msgs/msg/marker.hpp>
 
@@ -148,6 +150,13 @@ class GraphMsfRos2 : public GraphMsfClassic, public GraphMsfHolistic {
 
   // Subscribers
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr subImu_;
+  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr imuTimingPublisher_;
+  double lastImuInputStamp_ = -1.0;
+  double lastImuTimingStamp_ = -1.0;
+  double maxImuInputGap_ = 0.0;
+  uint64_t imuInputCount_ = 0;
+  uint64_t imuLargeGapCount_ = 0;
+  uint64_t imuRejectedOrderCount_ = 0;
   bool useImuOrientationFactor_ = false;
   double imuOrientationFactorRate_ = 10.0;
   double imuOrientationFactorNoise_ = 0.05;

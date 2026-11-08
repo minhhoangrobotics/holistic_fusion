@@ -206,13 +206,20 @@ void GraphMsfRos2::initializePublishers() {
 void GraphMsfRos2::initializeSubscribers() {
   RCLCPP_INFO(node_->get_logger(), "Initializing subscribers.");
 
-  // Imu
+  // IMU samples are integration increments, not replaceable display frames.
+  // A depth-one queue loses gyro/acceleration history whenever a LiDAR callback
+  // or graph lock holds this executor for more than one IMU period.
+  const int imuDepth = node_->declare_parameter<int>("sensor_params.imuSubscriptionDepth", 200);
+  if (imuDepth < 10 || imuDepth > 10000)
+    throw std::invalid_argument("imuSubscriptionDepth must be between 10 and 10000");
+  imuTimingPublisher_ = node_->create_publisher<std_msgs::msg::Float64MultiArray>(
+      "/graph_msf/imu_input_timing", 10);
   subImu_ = node_->create_subscription<sensor_msgs::msg::Imu>(
-      "/imu_topic", rclcpp::QoS(ROS_QUEUE_SIZE).best_effort(),
+      "/imu_topic", rclcpp::QoS(imuDepth).best_effort(),
       std::bind(&GraphMsfRos2::imuCallback, this, std::placeholders::_1));
 
-  RCLCPP_INFO(node_->get_logger(), "GraphMsfRos2 Initialized main IMU subscriber with topic: %s",
-              subImu_->get_topic_name());
+  RCLCPP_INFO(node_->get_logger(), "GraphMsfRos2 Initialized main IMU subscriber: %s, depth=%d",
+              subImu_->get_topic_name(), imuDepth);
 }
 
 void GraphMsfRos2::initializeMessages() {
@@ -422,6 +429,33 @@ long GraphMsfRos2::secondsSinceStart() {
 
 // Main IMU Callback
 void GraphMsfRos2::imuCallback(const sensor_msgs::msg::Imu::SharedPtr imuMsgPtr) {
+  const double inputStamp = rclcpp::Time(imuMsgPtr->header.stamp).seconds();
+  if (inputStamp <= lastImuInputStamp_) {
+    ++imuRejectedOrderCount_;
+    RCLCPP_WARN_THROTTLE(node_->get_logger(), *node_->get_clock(), 2000,
+                         "Ignoring non-increasing IMU acquisition stamp (%.9f <= %.9f)",
+                         inputStamp, lastImuInputStamp_);
+    return;
+  }
+  const double inputGap = lastImuInputStamp_ < 0.0 ? 0.0 : inputStamp - lastImuInputStamp_;
+  lastImuInputStamp_ = inputStamp;
+  ++imuInputCount_;
+  maxImuInputGap_ = std::max(maxImuInputGap_, inputGap);
+  if (graphConfigPtr_->imuRate_ > 0.0 && inputGap > 4.0 / graphConfigPtr_->imuRate_)
+    ++imuLargeGapCount_;
+  if (lastImuTimingStamp_ < 0.0 || inputStamp - lastImuTimingStamp_ >= 1.0) {
+    std_msgs::msg::Float64MultiArray timing;
+    timing.layout.dim.resize(1);
+    timing.layout.dim[0].label =
+        "stamp,source_dt_s,max_source_dt_s,receipt_age_s,received_samples,large_gaps,rejected_order";
+    timing.layout.dim[0].size = timing.layout.dim[0].stride = 7;
+    timing.data = {inputStamp, inputGap, maxImuInputGap_, node_->now().seconds() - inputStamp,
+                   static_cast<double>(imuInputCount_), static_cast<double>(imuLargeGapCount_),
+                   static_cast<double>(imuRejectedOrderCount_)};
+    imuTimingPublisher_->publish(timing);
+    maxImuInputGap_ = 0.0;
+    lastImuTimingStamp_ = inputStamp;
+  }
   if (imuMsgPtr->orientation_covariance[0] >= 0.0) {
     GraphMsf::setImuOrientationForAlignment(Eigen::Quaterniond(
         imuMsgPtr->orientation.w, imuMsgPtr->orientation.x,

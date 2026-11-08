@@ -115,4 +115,15 @@ ament_export_dependencies(
   rosidl_default_runtime
 )
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_imu_subscription test/test_imu_subscription.cpp)
+  # The public GraphMsf headers instantiate GTSAM code in this executable;
+  # link its DSOs directly instead of relying on the shared library's deps.
+  target_link_libraries(test_imu_subscription ${PROJECT_NAME} gtsam gtsam_unstable)
+  ament_target_dependencies(test_imu_subscription rclcpp sensor_msgs graph_msf)
+  set_tests_properties(test_imu_subscription PROPERTIES
+    ENVIRONMENT "ROS_DOMAIN_ID=167;ROS_LOCALHOST_ONLY=1")
+endif()
+
 ament_package()
